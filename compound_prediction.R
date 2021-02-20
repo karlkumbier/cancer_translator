@@ -1,11 +1,13 @@
 #+ setup, echo=FALSE
 library(readxl)
 library(tidyverse)
+library(tidytext)
 library(superheat)
 library(RColorBrewer)
 library(glmnet)
 library(caret)
 library(Matrix)
+library(data.table)
 
 mean_impute <- function(x) {
   x[is.na(x)] <- mean(x, na.rm=TRUE)
@@ -257,7 +259,7 @@ group_by(cpd.table, TargetsClean) %>%
 #' To focus in on compounds with differential bioactivity, we subset based
 #' on the standard deviation of compound bioactivity across cell lines.
 
-#+ bioactivity_plot_1, fig.height=12, fig.width=15
+#+ bioactivity_plot_1, fig.height=12, fig.width=18
 # Threshold bioactivity and scale to 0-1
 xplot <- x
 xplot[xplot > 15] <- 15
@@ -276,7 +278,7 @@ superheat(xplot[,order(xmean)],
           heat.pal.values=c(0, 0.5, 0.6, 0.7, 0.8, 0.9, 1),
           bottom.label.text.angle=90,
           bottom.label.size=1,
-          bottom.label.text.size=4, 
+          bottom.label.text.size=3, 
           title='Compound bioactivity by cell line')
 
 superheat(xplot[,head(order(xmean), 50)],
