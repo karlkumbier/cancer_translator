@@ -1,3 +1,4 @@
+#+ setup, warning=FALSE, message=FALSE
 library(data.table)
 library(tidyverse)
 library(xpose4)
@@ -14,6 +15,7 @@ setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
 
 train.prop <- 0.8
+model <- irf_fit
 
 #' The NCI60 data, describing bioactivity for 60 CCLs are available through 
 #' rcellminer. Below we consider a subset of drug classes from the ORACL paper,
@@ -50,8 +52,6 @@ moa.table <- data.frame(MoA=moa.split) %>%
   summarize(Count=n()) %>%
   arrange(desc(Count))
 
-write.csv(file='~/Desktop/moa_table.csv', moa.table, row.names=F, quote=F)
-
 # Map MOA to compound class
 class <- sapply(class.key, function(k) str_detect(moa, k))
 
@@ -68,14 +68,6 @@ x.activity <- getDrugActivityData(nsc.set)
 x.activity <- apply(x.activity, MAR=2, median_impute)
 print(dim(x.activity))
 
-# Upsample for class imbalance
-# If upsampling, we need to split train/test to not including training samples 
-# in test set. Discuss up/down sampling - should models be giving equal weight 
-# across drug classes?
-xbalanced <- downSample(x.activity, class.id)
-class.id <- xbalanced$Class
-x.activity <- select(xbalanced, -Class)
-print(dim(x.activity))
 
 #' We visualize bioactivity patterns within our compound set below. Heatmap rows 
 #' correspond to different compounds and columns cell lines. Compound classes 
@@ -108,7 +100,7 @@ data.frame(PctVar=cumsum(xpca$sdev ^ 2) / sum(xpca$sdev ^ 2)) %>%
 
 data.frame(xpca$x, Class=class.id) %>%
   ggplot(aes(x=PC1, y=PC2, col=Class)) +
-  geom_point() +
+  geom_point(alpha=0.5) +
   theme_bw()
 
 #' ## Predictive modeling
@@ -127,8 +119,20 @@ fits <- mclapply(1:n.replicate, function(i) {
   id.train <- createDataPartition(y, p=train.prop)$Resample1
   id.test <- setdiff(1:nrow(x), id.train)
   
+  # Rebalance classes within training/test sets
+  xtrain <- upSample(x[id.train,], as.factor(y[id.train]))
+  xtest <- upSample(x[id.test,], as.factor(y[id.test]))
+  
+  # Combine balanced training/test sets
+  x <- rbind(xtrain, xtest)
+  y <- x$Class
+  x <- select(x, -Class)
+  
+  id.train <- 1:nrow(xtrain)
+  id.test <- setdiff(1:nrow(x), id.train)
+  
   # Fit RF to predict moa from bioactivity
-  out <- irf_fit(x, y, id.train, id.test, ncell)
+  out <- model(x, y, id.train, id.test, ncell)
   return(list(accuracy=out$accuracy, selected=out$selected))
 }, mc.cores=10)
 
@@ -197,9 +201,21 @@ fits.null <- mclapply(1:n.replicate, function(i) {
   id.train <- createDataPartition(y, p=train.prop)$Resample1
   id.test <- setdiff(1:nrow(x), id.train)
   
+  # Rebalance classes within training/test sets
+  xtrain <- upSample(x[id.train,], as.factor(y[id.train]))
+  xtest <- upSample(x[id.test,], as.factor(y[id.test]))
+  
+  # Combine balanced training/test sets
+  x <- rbind(xtrain, xtest)
+  y <- x$Class
+  x <- select(x, -Class)
+  
+  id.train <- 1:nrow(xtrain)
+  id.test <- setdiff(1:nrow(x), id.train)
+  
   # Fit lasso to predict moa from bioactivity
   yy <- sample(y)
-  out <- irf_fit(x, yy, id.train, id.test, ncell)
+  out <- model(x, yy, id.train, id.test, ncell)
   return(out$accuracy)
 }, mc.cores=10)
 
@@ -225,9 +241,21 @@ fits.null <- mclapply(1:n.replicate, function(i) {
   id.train <- createDataPartition(y, p=train.prop)$Resample1
   id.test <- setdiff(1:nrow(x), id.train)
   
+  # Rebalance classes within training/test sets
+  xtrain <- upSample(x[id.train,], as.factor(y[id.train]))
+  xtest <- upSample(x[id.test,], as.factor(y[id.test]))
+  
+  # Combine balanced training/test sets
+  x <- rbind(xtrain, xtest)
+  y <- x$Class
+  x <- select(x, -Class)
+  
+  id.train <- 1:nrow(xtrain)
+  id.test <- setdiff(1:nrow(x), id.train)
+  
   # Fit RF to predict moa from bioactivity
-  out.null <- irf_fit(x, y, id.train, id.test, ncell, null.cells=TRUE)
-  out.opt <-  irf_fit(x, y, id.train, id.test, ncell)
+  out.null <- model(x, y, id.train, id.test, ncell, null.cells=TRUE)
+  out.opt <-  model(x, y, id.train, id.test, ncell)
   
   return(rbind(out.null$accuracy, out.opt$accuracy))
 }, mc.cores=10)

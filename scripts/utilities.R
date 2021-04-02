@@ -46,39 +46,40 @@ irf_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
   return(list(selected=selected, accuracy=accuracy))
 }
 
-
-
-
-
-################################################################################
-# Old utility functions
-################################################################################
-model_accuracy <- function(fit, x, y, smax=5) {
-  # Generate model predictions given a maximum number of cell lines
+glm_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
+  # Fit random forest model constrained to a select number of cell lines
+  if (is.null(test.id)) test.id <- setdiff(1:nrow(x), train.id)
   
-  # Evaluate number of cell lines used for each model (lambda value)
-  
-  betas <- lapply(coef(fit), function(b) as.matrix(b[-1,]))
+  # Fit initial model to assess variable importance
+  x <- as.matrix(x)
+  fit <- cv.glmnet(x=x[train.id,], y=y[train.id], family='multinomial', nfolds=5)
+
+  # Read coefficients at each level of lambda
+  betas <- lapply(fit$glmnet.fit$beta, function(b) as.matrix(b != 0))
   betas <- do.call(abind3, betas)
+  betas <- apply(betas, MAR=1:2, any)
+  counts <- colSums(betas)
   
-  # Collapse betas and identify maximal model under given constraint
-  betas.collapse <- apply(betas != 0, MAR=1:2, any)
-  s <- colSums(betas.collapse != 0)
-  idmax <- max(which(s <= smax))
+  # Read predictions at each level of lambda
+  ypred <- predict(fit$glmnet.fit, x[test.id,])
   
-  # Get model predictions
-  ypred <- predict(fit, x, type='response')
-  ypred <- ypred[,,idmax]
+  # Fit models with constrained number of cell lines
+  out <- lapply(k, function(kk) {
+    if (!null.cells) id.select <- max(which(counts <= kk))
+    if (null.cells) id.select <- sample(1:ncol(x), kk)
+    
+    ypred.select <- ypred[,,id.select]
+    ypred.class <- apply(ypred.select, MAR=1, which.max) - 1
+    
+    # Evaluate model performance
+    accuracy <- mean(ypred.class == y[test.id])
+    
+    # Return selected cell lines
+    selected <- betas[,id.select]
+    return(list(accuracy=accuracy, selected=selected))
+  })
   
-  # Normalize predictions for class imblanace
-  ypred.true <- mapply(function(ii, iy) ypred[ii, iy + 1], 1:length(y), y)
-  ypred <- apply(ypred, MAR=2, function(z) z / mean(z))
-  ypred.class <- apply(ypred, MAR=1, which.max) - 1
-  
-  # Return beta as average absolute coefficient
-  betas <- rowMeans(abs(betas[, idmax, ]))
-  
-  
-  return(list(accuracy=mean(ypred.class == y), betas=betas, ypred=ypred.true))
+  accuracy <- sapply(out, function(z) z$accuracy)
+  selected <- sapply(out, function(z) z$selected)
+  return(list(selected=selected, accuracy=accuracy))
 }
-
