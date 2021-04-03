@@ -41,6 +41,7 @@ moa.table <- data.frame(MoA=moa.split) %>%
   arrange(desc(Count))
 
 # Read in Louise compound annotation table and clean for class ID
+setwd('~/github/cancer_translator/')
 moa.louise <- read_excel('data/nci60/moa_table_LH.xlsx') %>%
   filter(!(is.na(comment) & is.na(reference_category_setof6))) %>%
   filter(!(comment == 'cant ID' & is.na(reference_category_setof6))) %>%
@@ -92,7 +93,7 @@ class.table <- data.frame(Class=class.id) %>%
   arrange(desc(Count))
 
 class.f <- filter(class.table, Count >= 10)
-x.activity.f <- x.activity[class.id %in% class.f$Class]
+x.activity.f <- x.activity[class.id %in% class.f$Class,]
 class.id.f <- class.id[class.id %in% class.f$Class]
 
 #' We visualize bioactivity patterns within our compound set below. Heatmap rows 
@@ -100,12 +101,12 @@ class.id.f <- class.id[class.id %in% class.f$Class]
 #' cluster relative to PC1 and PC2 but show high variability.
 #+ bioactivity_heatmap, fig.height=10, fig.width=15
 # Bioactivity heatmap visualization
-xplot <- apply(x.activity, MAR=2, rank)
+xplot <- apply(x.activity.f, MAR=2, rank)
 type <- as.factor(str_remove_all(colnames(xplot), ':.*'))
 type.pal <- scales::hue_pal()(length(unique(type)))
 
 superheat(xplot, 
-          membership.rows=class.id,
+          membership.rows=class.id.f,
           membership.cols=type,
           pretty.order.rows=TRUE,
           pretty.order.cols=TRUE,
@@ -116,7 +117,7 @@ superheat(xplot,
           bottom.label.text.angle=90)
 
 # Bioactivity PCA plot visualization
-xpca <- prcomp(apply(x.activity, MAR=2, rank))
+xpca <- prcomp(apply(x.activity.f, MAR=2, rank))
 data.frame(PctVar=cumsum(xpca$sdev ^ 2) / sum(xpca$sdev ^ 2)) %>%
   mutate(NPC=1:n()) %>%
   ggplot(aes(x=NPC, y=PctVar)) +
@@ -124,7 +125,7 @@ data.frame(PctVar=cumsum(xpca$sdev ^ 2) / sum(xpca$sdev ^ 2)) %>%
   geom_line() +
   theme_bw()
 
-data.frame(xpca$x, Class=class.id) %>%
+data.frame(xpca$x, Class=class.id.f) %>%
   ggplot(aes(x=PC1, y=PC2, col=Class)) +
   geom_point(alpha=0.5) +
   theme_bw()
@@ -133,8 +134,9 @@ data.frame(xpca$x, Class=class.id) %>%
 #' Below, we consider the problem of predicting which compound class a given 
 #' compound belongs to, and how many cell lines are required for prediction.
 #+ supervised_modeling, warning=FALSE
-y <- as.numeric(class.id) - 1
-x <- x.activity
+# Convery y indexing to range 0:nclass
+y <- as.numeric(as.factor(as.numeric(class.id.f))) - 1
+x <- x.activity.f
 ncell <- 2:10
 n.replicate <- 50
 
@@ -191,7 +193,7 @@ reshape2::melt(selected) %>%
 
 #+ supervised_modeling_heatmap, warning=FALSE, fig.height=12, fig.width=12
 # Plot distribution of compounds from select cell lines
-ncell.plot <- 5
+ncell.plot <- 10
 cell.select <- reshape2::melt(selected) %>%
   rename(CellLine=Var1, Ncell=Var2) %>%
   mutate(Ncell=ncell[Ncell])
@@ -208,7 +210,7 @@ xplot <- apply(x[,selected], MAR=2, rank)
 id.highlight <- colnames(xplot) == 'LC:A549/ATCC'
 
 superheat(xplot, 
-          membership.rows=class.id,
+          membership.rows=class.id.f,
           pretty.order.rows=TRUE,
           pretty.order.cols=TRUE,
           heat.pal=inferno(100),

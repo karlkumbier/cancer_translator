@@ -1,3 +1,8 @@
+clean_class <- function(x) {
+  if (all(is.na(x))) return(NA)
+  return(x[!is.na(x)])
+}
+
 median_impute <- function(x) {
   # Impute missing samples in vector as median
   x[is.na(x)] <- median(x, na.rm=TRUE)
@@ -6,13 +11,13 @@ median_impute <- function(x) {
 
 abind3 <- function(...) abind::abind(..., along=3)
 
-irf_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
+irf_fit <- function(x, y, id.train, id.test=NULL, k=2:20, null.cells=FALSE) {
   # Fit random forest model constrained to a select number of cell lines
-  if (is.null(test.id)) test.id <- setdiff(1:nrow(x), train.id)
+  if (is.null(id.test)) id.test <- setdiff(1:nrow(x), id.train)
   
   # Fit initial model to assess variable importance
-  fit <- iRF(x=x[train.id,], 
-             y=as.factor(y)[train.id], 
+  fit <- iRF(x=x[id.train,], 
+             y=as.factor(y)[id.train], 
              type='ranger', 
              n.iter=2)
   
@@ -26,14 +31,14 @@ irf_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
     xselect <- x[,names(id.select)]
     
     # Fit model constraining # of cell lines
-    fitk <- iRF(x=xselect[train.id,], 
-                y=as.factor(y)[train.id], 
+    fitk <- iRF(x=xselect[id.train,], 
+                y=as.factor(y)[id.train], 
                 type='ranger', 
                 n.iter=1)
     
     # Evaluate model performance
-    ypred <- predict(fitk$rf.list, xselect[test.id,])
-    accuracy <- mean(ypred$predictions == y[test.id])
+    ypred <- predict(fitk$rf.list, xselect[id.test,])
+    accuracy <- mean(ypred$predictions == (as.numeric(y[id.test]) - 1))
     
     # Return selected cell lines
     selected <- colnames(x) %in% names(id.select)
@@ -46,13 +51,16 @@ irf_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
   return(list(selected=selected, accuracy=accuracy))
 }
 
-glm_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
+glm_fit <- function(x, y, id.train, id.test=NULL, k=2:20, null.cells=FALSE) {
   # Fit random forest model constrained to a select number of cell lines
-  if (is.null(test.id)) test.id <- setdiff(1:nrow(x), train.id)
+  
+  # Convert y range to 0:nclass
+  y <- as.numeric(as.factor(y)) - 1
+  if (is.null(id.test)) id.test <- setdiff(1:nrow(x), id.train)
   
   # Fit initial model to assess variable importance
   x <- as.matrix(x)
-  fit <- cv.glmnet(x=x[train.id,], y=y[train.id], family='multinomial', nfolds=5)
+  fit <- cv.glmnet(x=x[id.train,], y=y[id.train], family='multinomial', nfolds=5)
 
   # Read coefficients at each level of lambda
   betas <- lapply(fit$glmnet.fit$beta, function(b) as.matrix(b != 0))
@@ -61,7 +69,7 @@ glm_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
   counts <- colSums(betas)
   
   # Read predictions at each level of lambda
-  ypred <- predict(fit$glmnet.fit, x[test.id,])
+  ypred <- predict(fit$glmnet.fit, x[id.test,])
   
   # Fit models with constrained number of cell lines
   out <- lapply(k, function(kk) {
@@ -72,7 +80,7 @@ glm_fit <- function(x, y, train.id, test.id=NULL, k=2:20, null.cells=FALSE) {
     ypred.class <- apply(ypred.select, MAR=1, which.max) - 1
     
     # Evaluate model performance
-    accuracy <- mean(ypred.class == y[test.id])
+    accuracy <- mean(ypred.class == y[id.test])
     
     # Return selected cell lines
     selected <- betas[,id.select]
