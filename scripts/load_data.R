@@ -1,18 +1,26 @@
 library(data.table)
 library(tidyverse)
 library(rprofiler)
+library(parallel)
 
 setwd('~/github/cancer_translator/')
-data.dir <- 'data/screens/20210616/'
+plate.dir <- 'data/screens/LH_CDC_1/plates/'
+platemap.dir <- 'data/screens/LH_CDC_1/platemaps/'
+
+plates <- list.dirs(plate.dir, recursive=FALSE) %>% 
+  str_subset('reimaged', negate=TRUE)
+
+platemaps <- str_c(platemap.dir, list.files(platemap.dir))
 
 nfeat <- 93
-plates <- list.dirs(data.dir, recursive=FALSE)
 n.core <- 16
+prop.dmso <- 0.25
+
 
 read_plate <- function(plate.dir, nfeat) {
   
   # Set evaluation directory to be read
-  eval.dir <- str_c(plate.dir, '/Evaluation1')
+  eval.dir <- list.dirs(plate.dir) %>% str_subset('Evaluation')
   if (length(list.dirs(plate.dir, recursive=FALSE)) > 1) {
     eval.dir <- check_eval_dirs(plate.dir, nfeat)
   }
@@ -47,10 +55,9 @@ select_features <- function(x, fselect) {
   x <- dplyr::select(x, matches(fselect))
 }
 
-generate_ks_profiles <- function(x, prop=1, n.core=1) {
+generate_ks_profiles <- function(x, id.control, prop=1, n.core=1) {
   # Generate KS profiles for select plate
-  # NOTE: controls are defined by colums (2, 23)
-  xcontrol <- filter(x, Column %in% c(2, 23)) %>% sample_frac(prop)
+  xcontrol <- filter(x, id.control) %>%  sample_frac(prop)
   
   # Note: features are defined by nonborder key
   id.feat <- which(str_detect(colnames(x), '^nonborder'))
@@ -58,11 +65,10 @@ generate_ks_profiles <- function(x, prop=1, n.core=1) {
   plate <- unique(x$PlateID)
   
   # Set well ids
-  x <- mutate(x, Well=str_c(Row, '_', Column))
-  wells <- unique(x$Well)
+  wells <- unique(x$WellID)
 
   # Generate KS profiles for each well
-  x <- lapply(wells, function(w) filter(x, Well == w))
+  x <- lapply(wells, function(w) filter(x, WellID == w))
   xks <- mclapply(x, wellKS, xcontrol=xcontrol, id.feat=id.feat, mc.cores=n.core)
   xks <- do.call(rbind, xks)
   
@@ -71,16 +77,52 @@ generate_ks_profiles <- function(x, prop=1, n.core=1) {
   return(xks)
 }
 
+
+################################################################################
+# Load in metadata for each plate
+################################################################################
+xmeta <- lapply(platemaps, function(p) {
+  plate.id <- str_remove_all(p, "^.*platemaps/") %>% str_remove_all('\\.xlsx')
+  out <- loadMeta(p) %>% mutate(PlateID=plate.id)
+})
+
+# Subset to metadata features in all files
+features <- lapply(xmeta, colnames)
+features <- Reduce(intersect, features)
+xmeta <- lapply(xmeta, function(x) dplyr::select(x, one_of(features)))
+
+# Filter out empty wells
+xmeta <- rbindlist(xmeta) %>% filter(!is.na(Compound_ID))
+
 ################################################################################
 # Load in data for each plate
 ################################################################################
-x <- mclapply(plates, read_plate, nfeat=nfeat, mc.cores=n.core)
 
-# Subset to features and well metadata
-fselect <- '(PlateID|Row|Column|^nonborder.*)'
-x <- lapply(x, select_features, fselect=fselect)
+x <- mclapply(plates, function(p) {
+  set.seed(47)
+  tryCatch({
+    plate.id <- str_remove_all(p, "^.*plates//")
+    xmeta.p <- filter(xmeta, PlateID == plate.id)
+    
+    # Match metadata/data
+    out <- read_plate(p, nfeat=nfeat) %>% mutate(WellID=str_c(Row, '-', Column))
+    xmeta.p <- xmeta.p[match(out$WellID, xmeta.p$WellID),]
+    
+    out <- dplyr::select(out, matches('(PlateID|WellID|^nonborder.*)'))
+    id.control <- xmeta.p$Compound_ID == 'DMSO'
+    xks <- generate_ks_profiles(out, id.control=id.control, n.core=16, prop=prop.dmso)
+    
+    # Match metadata with KS profiles
+    xmeta.p <- distinct(xmeta.p)
+    xmeta.p <- xmeta.p[match(xks$WellID, xmeta.p$WellID),]
+    return(list(xks=xks, xmeta=xmeta))
+  }, error=function(e) {
+    print(p)
+    return(NULL)
+  })
+}, mc.cores=1)
 
-# Generate KS profiles for each plate
-xks <- lapply(x, generate_ks_profiles, n.core=16, prop=0.1)
-xks <- rbindlist(xks)
-save(file='data/screens/20210616/ks_profiles.Rdata', xks)
+
+xks <- rbindlist(lapply(x, function(z) return(z$xks)))
+xmeta <- rbindlist(lapply(x, function(z) return(z$xmeta)))
+save(file='data/screens/LH_CDC_1/ks_profiles.Rdata', xks, xmeta)
