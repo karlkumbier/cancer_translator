@@ -110,7 +110,7 @@ x <- mclapply(plates, function(p) {
     
     out <- dplyr::select(out, matches('(PlateID|WellID|^nonborder.*)'))
     id.control <- xmeta.p$Compound_ID == 'DMSO'
-    xks <- generate_ks_profiles(out, id.control=id.control, n.core=16, prop=prop.dmso)
+    xks <- generate_ks_profiles(out, id.control=id.control, n.core=n.core, prop=prop.dmso)
     
     # Match metadata with KS profiles
     xmeta.p <- distinct(xmeta.p)
