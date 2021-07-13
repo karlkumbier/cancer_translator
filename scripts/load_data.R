@@ -3,9 +3,9 @@ library(tidyverse)
 library(rprofiler)
 library(parallel)
 
-setwd('~/github/cancer_translator/')
-plate.dir <- 'data/screens/LH_CDC_1/plates/'
-platemap.dir <- 'data/screens/LH_CDC_1/platemaps/'
+setwd('/awlab/Lab_temp/Louise/opfeatures/')
+plate.dir <- 'LH_CDC_1/plates/'
+platemap.dir <- 'LH_CDC_1/platemaps/'
 
 plates <- list.dirs(plate.dir, recursive=FALSE) %>% 
   str_subset('reimaged', negate=TRUE)
@@ -125,4 +125,4 @@ x <- mclapply(plates, function(p) {
 
 xks <- rbindlist(lapply(x, function(z) return(z$xks)))
 xmeta <- rbindlist(lapply(x, function(z) return(z$xmeta)))
-save(file='data/screens/LH_CDC_1/ks_profiles.Rdata', xks, xmeta)
+save(file='./ks_profiles.Rdata', xks, xmeta)
