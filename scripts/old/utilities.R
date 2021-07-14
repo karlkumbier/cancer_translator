@@ -37,18 +37,28 @@ irf_fit <- function(x, y, id.train, id.test=NULL, k=2:20, null.cells=FALSE) {
                 n.iter=1)
     
     # Evaluate model performance
-    ypred <- predict(fitk$rf.list, xselect[id.test,])
-    accuracy <- mean(ypred$predictions == (as.numeric(y[id.test]) - 1))
+    ypred <- predict(fitk$rf.list, xselect[id.test,])$prediction
+    ytest <- as.numeric(y[id.test]) - 1
+  
+    top1_accuracy <- function(x, y) mean(x == y)
+    accuracy <- top1_accuracy(ypred, ytest) 
+    class.accuracy <- sapply(unique(ytest), function(z) {
+      top1_accuracy(ypred[ytest == z], ytest[ytest == z])
+    })
     
+    names(class.accuracy) <- unique(ytest)
+      
     # Return selected cell lines
     selected <- colnames(x) %in% names(id.select)
     names(selected) <- colnames(x)
-    return(list(accuracy=accuracy, selected=selected))
+    return(list(accuracy=accuracy, class.accuracy=class.accuracy, selected=selected))
   })
   
   accuracy <- sapply(out, function(z) z$accuracy)
+  class.accuracy <- sapply(out, function(z) z$class.accuracy)
   selected <- sapply(out, function(z) z$selected)
-  return(list(selected=selected, accuracy=accuracy))
+  
+  return(list(selected=selected, accuracy=accuracy, class.accuracy=class.accuracy))
 }
 
 glm_fit <- function(x, y, id.train, id.test=NULL, k=2:20, null.cells=FALSE) {
