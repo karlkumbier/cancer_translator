@@ -13,9 +13,8 @@ plates <- list.dirs(plate.dir, recursive=FALSE) %>%
 platemaps <- str_c(platemap.dir, list.files(platemap.dir))
 
 nfeat <- 93
-n.core <- 16
+n.core <- 6
 prop.dmso <- 0.25
-
 
 read_plate <- function(plate.dir, nfeat) {
   
