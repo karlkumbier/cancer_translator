@@ -73,7 +73,7 @@ fit_cell_line_ <- function(x, y, id.train, model, model_predict) {
 }
 
 irf <- function(x, y) {
-  fit <- iRF(x=x, y=y, type='ranger', n.iter=1, n.core=6)
+  fit <- iRF(x=x, y=y, type='ranger', n.iter=1, n.core=6, verbose=FALSE)
   return(fit)
 }
 

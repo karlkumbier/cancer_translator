@@ -139,7 +139,7 @@ filter(x, Control) %>%
 #' features by regressin KS value on column ID — i.e. we remove the portion of 
 #' a feature that can be explained by a wells column position. Plots below are
 #' the same as above but after normalization
-#+ normalize
+#+ normalize, fig.height=15, fig.width=21
 # Normalize intensity within each plate
 if (intensity.normalize) {
   plates <- unique(x$PlateID)
@@ -295,6 +295,8 @@ for (pcs in pc.list) {
 ################################################################################
 # Bioactivity
 ################################################################################
+setwd('~/github/cancer_translator/')
+
 # Normalize data matrix
 l2norm <- function(z) z / sqrt(sum(z ^ 2))
 x <- mutate_if(x, is.numeric, l2norm)
@@ -310,24 +312,28 @@ xdist <- rbindlist(xdist)
 # Bioactivity by plate
 bioactive.plate <- group_by(xdist, PlateID) %>% 
   summarize(PropBioactive=mean(pval == 0))
+print(bioactive.plate)
 write.csv(file='results/bioactivity_plate.csv', bioactive.plate, quote=FALSE)
 
 # Bioactivity by compound category
 bioactive.category <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   group_by(Compound_Category) %>% 
   summarize(PropBioactive=mean(pval == 0))
+print(bioactive.category)
 write.csv(file='results/bioactivity_category.csv', bioactive.category, quote=FALSE)
 
 # Bioactivity by cell line
 bioactive.cell <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   group_by(Cell_Line) %>% 
   summarize(PropBioactive=mean(pval == 0))
+print(bioactive.cell)
 write.csv(file='results/bioactivity_category.csv', bioactive.cell, quote=FALSE)
 
 # Bioactivity by cell line/category
 bioactive.cell.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   group_by(Compound_Category, Cell_Line) %>% 
   summarize(PropBioactive=mean(pval == 0))
+print(bioactive.cell.cat)
 write.csv(file='results/bioactivity_cell_category.csv', bioactive.cell.cat, quote=FALSE)
 
 # Filter to reference compound doses that are bioactive in > 1 cell line
@@ -360,7 +366,7 @@ xf <- filter(xf, Compound_Category %in% cpd.keep$Compound_Category)
 #' of wells are randomly sampled to train models and the remaining 20% are used 
 #' to assess accuracy. Note: a compound can appear in both the training and test 
 #' sets but at different doses.
-#+ random_holdout, fig.height=8, fig.width=15
+#+ random_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
 ################################################################################
 # Random holdout predictions
 ################################################################################
@@ -413,7 +419,7 @@ rbind(xplot.cell, xplot.bag) %>%
 #' is, 4 compounds from each category randomly sampled to train models and the 
 #' remaining compound from each category is used to assess accuracy. Note: 
 #' models here are evaluated on compounds they have never seen
-#+ compound_holdout, fig.height=8, fig.width=15
+#+ compound_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
