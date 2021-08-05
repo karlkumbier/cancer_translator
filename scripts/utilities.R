@@ -1,6 +1,60 @@
 ################################################################################
 # Modeling functions
 ################################################################################
+fit_marker <- function(x, 
+                       markers, 
+                       model, 
+                       model_predict, 
+                       holdout='random', 
+                       prop=0.9,
+                       reps=50) {
+  
+  markers <- str_c(markers, collapse='|')
+  marker.re <- str_c('(', markers, ')')
+  
+  xx <- select(x, matches('^nonborder')) %>% select(matches(marker.re))
+  yy <- as.factor(x$Compound_Category)
+  
+  # Set training set
+  if (holdout == 'random') {
+    # Randomly sample training set
+    id.train <- createDataPartition(yy, times=reps, p=prop)
+    
+  } else {
+    # Randomly hold-out single compound for testing
+    cpd.table <- select(x, Compound_Category, Compound_ID) %>%
+      group_by(Compound_Category) %>%
+      summarize(Compound_ID=list(unique(Compound_ID)))
+    
+    cpd.train <- lapply(1:reps, function(i) {
+      sapply(cpd.table$Compound_ID, sample, size=length(cpd.table$Compound_ID) - 1)
+    })
+    
+    id.train <- lapply(cpd.train, function(i) {
+      which(x$Compound_ID %in% i)
+    })
+  }
+  
+  # Fit models to each training set
+  out <- lapply(id.train, fit_wrap, 
+                x=xx, 
+                y=yy, 
+                model=model, 
+                model_predict=model_predict
+  )
+  
+  # Aggregate model predictions
+  xx.select <- select(x, !matches('^nonborder')) %>% 
+    mutate(ID=1:n())
+  
+  out <- rbindlist(out) %>%
+    left_join(xx.select, by='ID') %>%
+    select(-ID) %>%
+    mutate(Marker=markers)
+  
+  return(out)
+}
+
 fit_cell_line <- function(x, 
                           cell.line, 
                           model, 
@@ -34,7 +88,7 @@ fit_cell_line <- function(x,
   }
   
   # Fit models to each training set
-  out <- lapply(id.train, fit_cell_line_, 
+  out <- lapply(id.train, fit_wrap, 
                 x=xx, 
                 y=yy, 
                 model=model, 
@@ -50,7 +104,7 @@ fit_cell_line <- function(x,
   return(out)
 }
 
-fit_cell_line_ <- function(x, y, id.train, model, model_predict) {
+fit_wrap <- function(x, y, id.train, model, model_predict) {
   
   # Upsample for class balance
   id.test <- setdiff(1:nrow(x), id.train)
