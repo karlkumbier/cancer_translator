@@ -1,4 +1,4 @@
-#+ setup, echo=FALSE
+#+ setup, echo=FALSE, message=FALSE
 library(data.table)
 library(tidyverse)
 library(tidytext)
@@ -94,7 +94,7 @@ xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
 #' For each cell line, we train classifiers to predict compound category from
 #' phenotypic profiling features. Compounds/doses are filtered to include only 
 #' those that are bioactive in at least one cell line.
-#+ modeling, fig.height=8, fig.width=15, message=FALSE, warnings=FALSE, echo=FALSE
+#+ modeling, fig.height=8, fig.width=18, message=FALSE, warnings=FALSE, echo=FALSE
 ################################################################################
 # Modeling
 ################################################################################
@@ -115,7 +115,7 @@ xf <- filter(xf, Compound_Category %in% cpd.keep$Compound_Category)
 #' of wells are randomly sampled to train models and the remaining 20% are used 
 #' to assess accuracy. Note: a compound can appear in both the training and test 
 #' sets but at different doses.
-#+ random_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
+#+ random_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
 ################################################################################
 # Random holdout predictions
 ################################################################################
@@ -128,12 +128,14 @@ id <- id.feat & id.morphology
 colnames(xf)[id] <- str_c(colnames(xf)[id], 'morphology')
 
 markers1 <- lapply(markers, function(m) c(m, 'morphology'))
-
 markers2 <- combn(markers, 2, simplify=FALSE)
 markers2 <- lapply(markers2, function(m) c(m, 'morphology'))
 
+markers4 <- list(markers)
+markers11 <- lapply(markers, function(m) m)
+
 # Fit models for each cell line
-markers <- c(markers1, markers2)
+markers <- c(markers1, markers2, markers11, markers4)
 ypred <- lapply(markers, 
                 fit_marker,
                 x=xf,
@@ -162,18 +164,20 @@ xplot.marker <- group_by(ypred, Marker, Compound_Category) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue))
 
 xplot.marker %>%
+  mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02) +
   theme_bw() +
-  ylim(0:1)
+  ylim(0:1) +
+  theme(axis.text.x=element_text(angle=90))
 
 #' Next, we assess performance relative to a randomly held out compounds. That 
 #' is, 4 compounds from each category randomly sampled to train models and the 
 #' remaining compound from each category is used to assess accuracy. Note: 
 #' models here are evaluated on compounds they have never seen
-#+ compound_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
+#+ compound_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
@@ -193,20 +197,24 @@ xplot.marker <- group_by(ypred, Marker) %>%
   mutate(Accuracy=round(Accuracy, 2))
 
 xplot.marker %>%
+  mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy)) +
   geom_bar(stat='identity', fill='#0088D1') +
   geom_text(aes(x=Marker, y=Accuracy + 0.02, label=Accuracy)) +
   theme_bw() +
-  ylim(c(0, 1))
+  ylim(c(0, 1)) +
+  theme(axis.text.x=element_text(angle=90))
 
 # Accuracy by compound category
 xplot.marker <- group_by(ypred, Marker, Compound_Category) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue))
 
 xplot.marker %>%
+  mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02) +
   theme_bw() +
-  ylim(0:1)
+  ylim(0:1) +
+  theme(axis.text.x=element_text(angle=90))
