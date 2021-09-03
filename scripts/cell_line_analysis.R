@@ -5,6 +5,7 @@ library(tidytext)
 library(parallel)
 library(iRF)
 library(caret)
+library(superheat)
 
 col.pal <- RColorBrewer::brewer.pal(11, 'RdYlBu')
 col.pal[6] <- '#FFFFFF'
@@ -51,36 +52,59 @@ xdist <- mclapply(unique(x$PlateID), function(p) {
 
 xdist <- rbindlist(xdist)
 
-# Bioactivity by plate
-bioactive.plate <- group_by(xdist, PlateID) %>% 
-  summarize(PropBioactive=mean(pval == 0))
+# Group bioactivity scores by cell line/compound
+xgroup <- group_by(xdist, Cell_Line, Compound_ID, Compound_Category) %>% 
+  summarize(DistNorm=mean(DistNorm), .groups='drop') %>%
+  group_by(Compound_ID) %>%
+  mutate(Count=n()) %>%
+  ungroup() %>%
+  filter(Count == 3) %>%
+  arrange(Compound_ID, Cell_Line)
 
-print(bioactive.plate)
-write.csv(file='results/bioactivity_plate.csv', bioactive.plate, quote=FALSE)
+# Format cell x compound bioactivity for visualization
+xplot <- matrix(xgroup$DistNorm, nrow=3)
+rownames(xplot) <- unique(xgroup$Cell_Line)
+colnames(xplot) <- unique(xgroup$Compound_ID)
+category <- matrix(xgroup$Compound_Category, nrow=3)[1,]
 
-# Bioactivity by compound category
-bioactive.category <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
-  group_by(Compound_Category) %>% 
-  summarize(PropBioactive=mean(pval == 0))
+# Plot bioactivity by cell line, compound
+xplot.t <- xplot
+xplot.t[xplot.t < 1] <- 0
+superheat(log(xplot.t + 1, base=2),
+          pretty.order.rows=TRUE,
+          pretty.order.cols=TRUE,
+          heat.pal=viridis::inferno(10), 
+          heat.pal.values=seq(0, 1, by=0.1),
+          title='Bioactivity by cell line, compound (log scale)')
 
-print(bioactive.category)
-write.csv(file='results/bioactivity_category.csv', bioactive.category, quote=FALSE)
+# Plot bioactivity by cell line, coompound category
+cat.count <- table(category)
+cat.keep <- setdiff(names(cat.count[cat.count > 20]), 'Others')
+superheat(log(xplot.t + 1, base=2)[,category %in% cat.keep],
+          pretty.order.rows=TRUE,
+          pretty.order.cols=TRUE,
+          membership.cols=category[category %in% cat.keep],
+          bottom.label.text.angle=90,
+          bottom.label.size=0.75,
+          heat.pal=viridis::inferno(10), 
+          heat.pal.values=seq(0, 1, by=0.1),
+          title='Bioactivity by cell line, compound (log scale)\nprevalent categories')
 
-# Bioactivity by cell line
-bioactive.cell <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
-  group_by(Cell_Line) %>% 
-  summarize(PropBioactive=mean(pval == 0))
-
-print(bioactive.cell)
-write.csv(file='results/bioactivity_category.csv', bioactive.cell, quote=FALSE)
-
-# Bioactivity by cell line/category
+# Generate table of bioactivity by cell line/category
 bioactive.cell.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   group_by(Compound_Category, Cell_Line) %>% 
   summarize(PropBioactive=mean(pval == 0))
 
 print(bioactive.cell.cat)
 write.csv(file='results/bioactivity_cell_category.csv', bioactive.cell.cat, quote=FALSE)
+
+
+# Generate table of bioactivity by plate
+bioactive.plate <- group_by(xdist, PlateID) %>% 
+  summarize(PropBioactive=mean(pval == 0))
+
+print(bioactive.plate)
+write.csv(file='results/bioactivity_plate.csv', bioactive.plate, quote=FALSE)
 
 # Filter to reference compound doses that are bioactive in > 1 cell line
 xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
