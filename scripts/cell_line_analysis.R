@@ -1,4 +1,4 @@
-#+ setup, echo=FALSE
+#+ setup, echo=FALSE, warning=FALSE, message=FALSE
 library(data.table)
 library(tidyverse)
 library(tidytext)
@@ -20,6 +20,11 @@ intensity.normalize <- TRUE
 fin <- str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata')
 load(fin)
 
+options(knitr.table.format = function() {
+  if (knitr::is_latex_output())
+    "latex" else "pipe"
+})
+
 #' # Bioactivity filtering
 #' Before training compound classifiers, we filter out compounds/doses that
 #' cannot be distinguished from DMSO. Specifically, we (i) take a subsample
@@ -34,7 +39,7 @@ load(fin)
 #' across many subsamples allows us to generate a bioactivity p-value. Tables 
 #' below summarize bioactivity by plate, compound category (in reference set),
 #' and cell line.
-#+ bioactivity
+#+ bioactivity, fig.height=8, fig.width=12
 ################################################################################
 # Bioactivity
 ################################################################################
@@ -65,6 +70,8 @@ xgroup <- group_by(xdist, Cell_Line, Compound_ID, Compound_Category) %>%
 xplot <- matrix(xgroup$DistNorm, nrow=3)
 rownames(xplot) <- unique(xgroup$Cell_Line)
 colnames(xplot) <- unique(xgroup$Compound_ID)
+
+# Set compound categories for visualization
 category <- matrix(xgroup$Compound_Category, nrow=3)[1,]
 
 # Plot bioactivity by cell line, compound
@@ -75,11 +82,11 @@ superheat(log(xplot.t + 1, base=2),
           pretty.order.cols=TRUE,
           heat.pal=viridis::inferno(10), 
           heat.pal.values=seq(0, 1, by=0.1),
-          title='Bioactivity by cell line, compound (log scale)')
+          title='Bioactivity by cell line, compound (log scale)\nall compounds')
 
 # Plot bioactivity by cell line, coompound category
-cat.count <- table(category)
-cat.keep <- setdiff(names(cat.count[cat.count > 20]), 'Others')
+cat.table <- table(category)
+cat.keep <- setdiff(names(cat.table[cat.table > 25]), 'Others')
 superheat(log(xplot.t + 1, base=2)[,category %in% cat.keep],
           pretty.order.rows=TRUE,
           pretty.order.cols=TRUE,
@@ -88,14 +95,14 @@ superheat(log(xplot.t + 1, base=2)[,category %in% cat.keep],
           bottom.label.size=0.75,
           heat.pal=viridis::inferno(10), 
           heat.pal.values=seq(0, 1, by=0.1),
-          title='Bioactivity by cell line, compound (log scale)\nprevalent categories')
+          title='Bioactivity by cell line, compound (log scale)\nprevalent compounds')
 
 # Generate table of bioactivity by cell line/category
 bioactive.cell.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   group_by(Compound_Category, Cell_Line) %>% 
   summarize(PropBioactive=mean(pval == 0))
 
-print(bioactive.cell.cat)
+knitr::kable(bioactive.cell.cat)
 write.csv(file='results/bioactivity_cell_category.csv', bioactive.cell.cat, quote=FALSE)
 
 
@@ -103,7 +110,7 @@ write.csv(file='results/bioactivity_cell_category.csv', bioactive.cell.cat, quot
 bioactive.plate <- group_by(xdist, PlateID) %>% 
   summarize(PropBioactive=mean(pval == 0))
 
-print(bioactive.plate)
+knitr::kable(bioactive.plate)
 write.csv(file='results/bioactivity_plate.csv', bioactive.plate, quote=FALSE)
 
 # Filter to reference compound doses that are bioactive in > 1 cell line

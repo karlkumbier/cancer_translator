@@ -127,7 +127,7 @@ fit_wrap <- function(x, y, id.train, model, model_predict) {
 }
 
 irf <- function(x, y) {
-  fit <- iRF(x=x, y=y, type='ranger', n.iter=1, n.core=6, verbose=FALSE)
+  fit <- iRF(x=x, y=y, type='ranger', n.iter=1, n.core=1, verbose=FALSE)
   return(fit)
 }
 
