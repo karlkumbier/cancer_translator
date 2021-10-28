@@ -7,6 +7,7 @@ library(tidytext)
 library(parallel)
 library(iRF)
 library(caret)
+library(ggsci)
 
 ################################################################################
 # Setup
@@ -23,18 +24,7 @@ source('scripts/utilities.R')
 data.dir <- 'data/screens/LH_CDC_1/'
 load(str_c(data.dir, 'ks_profiles.Rdata'))
 
-if (FALSE) {
-  xks <- mutate(xks, ID=str_c(PlateID, '_', WellID)) %>%
-    dplyr::select(-PlateID, -WellID)
-  
-  xmeta <- mutate(xmeta, ID=str_c(PlateID, '_', WellID))
-  x <- left_join(xks, xmeta, by='ID') %>%
-    mutate(Control=Compound_ID == 'DMSO') %>%
-    distinct() %>%
-    filter(!is.na(PlateID)) %>%
-    mutate(Col=as.numeric(sapply(str_split(WellID, '-'), tail, 1)))
-}
-
+# TODO: check plate loading and clean plateID in data
 xks <- select(xks, -PlateID, -WellID)
 x <- cbind(xks, xmeta) %>%
   mutate(Control=Compound_ID == 'DMSO') %>%
@@ -62,7 +52,8 @@ filter(x, Control) %>%
   ggplot(aes(x=reorder(Cell_Line, NCells), y=NCells)) +
   geom_boxplot(alpha=0.7, aes(fill=Cell_Line, col=Cell_Line)) +
   theme_bw() +
-  scale_fill_hue(l=60) +
+  scale_fill_nejm() +
+  scale_color_nejm() +
   theme(legend.position='none') +
   ggtitle('Cell counts, DMSO wells')
 
@@ -72,7 +63,8 @@ filter(x, Control) %>%
   ggplot(aes(x=reorder(Cell_Line, NCells), y=NCells)) +
   geom_boxplot(alpha=0.7, aes(fill=Cell_Line, col=Cell_Line)) +
   theme_bw() +
-  scale_fill_hue(l=60) +
+  scale_fill_nejm() +
+  scale_color_nejm() +  
   theme(legend.position='none') +
   ggtitle('Plate average cell counts, DMSO wells')
 
@@ -95,17 +87,6 @@ colnames(xcontrol) <- str_remove_all(colnames(xcontrol), 'nonborder\\.\\.\\.')
 # threshold KS values for visualization
 xcontrol[xcontrol < -ks.thresh] <- -ks.thresh
 xcontrol[xcontrol > ks.thresh] <- ks.thresh
-
-superheat(xcontrol,
-          membership.rows=cell.line,
-          pretty.order.rows=TRUE,
-          pretty.order.cols=TRUE,
-          heat.pal=col.pal,
-          heat.pal.values=seq(0, 1, by=0.1),
-          bottom.label.text.angle=90,
-          bottom.label.text.size=3,
-          bottom.label.size=0.75,
-          title='Feature distribution by cell line')
 
 superheat(xcontrol,
           membership.rows=column,
@@ -136,7 +117,7 @@ data.frame(xcontrol) %>%
 
 #' # Normalization
 #' To control for well position effects observed above, we normalize all 
-#' features by regressin KS value on column ID — i.e. we remove the portion of 
+#' features by regressing KS value on column ID — i.e. we remove the portion of 
 #' a feature that can be explained by a wells column position. Plots below are
 #' the same as above but after normalization
 #+ normalize, fig.height=15, fig.width=21
@@ -161,17 +142,6 @@ colnames(xcontrol) <- str_remove_all(colnames(xcontrol), 'nonborder\\.\\.\\.')
 # threshold KS values for visualization
 xcontrol[xcontrol < -ks.thresh] <- -ks.thresh
 xcontrol[xcontrol > ks.thresh] <- ks.thresh
-
-superheat(xcontrol,
-          membership.rows=cell.line,
-          pretty.order.rows=TRUE,
-          pretty.order.cols=TRUE,
-          heat.pal=col.pal,
-          heat.pal.values=seq(0, 1, by=0.1),
-          bottom.label.text.angle=90,
-          bottom.label.text.size=3,
-          bottom.label.size=0.75,
-          title='Feature distribution by cell line')
 
 superheat(xcontrol,
           membership.rows=column,

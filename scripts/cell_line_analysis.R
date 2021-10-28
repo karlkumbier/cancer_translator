@@ -6,11 +6,11 @@ library(parallel)
 library(iRF)
 library(caret)
 library(superheat)
+library(ggsci)
 
-col.pal <- RColorBrewer::brewer.pal(11, 'RdYlBu')
-col.pal[6] <- '#FFFFFF'
 intensity.normalize <- TRUE
-n.core <- 6
+n.core <- 16
+prop.train <- 0.8
 
 setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
@@ -46,7 +46,7 @@ options(knitr.table.format = function() {
 #' across many subsamples allows us to generate a bioactivity p-value. Tables 
 #' below summarize bioactivity by plate, compound category (in reference set),
 #' and cell line.
-#+ bioactivity, fig.height=8, fig.width=12
+#+ bioactivity, fig.height=8, fig.width=14
 ################################################################################
 # Bioactivity
 ################################################################################
@@ -89,7 +89,7 @@ superheat(log(xplot.t + 1, base=2),
           pretty.order.cols=TRUE,
           heat.pal=viridis::inferno(10), 
           heat.pal.values=seq(0, 1, by=0.1),
-          title='Bioactivity by cell line, compound (log scale)\nall compounds')
+          title='Bioactivity by cell line, compound (log l2 distance from DMSO)\nall compounds')
 
 # Plot bioactivity by cell line, coompound category
 cat.table <- table(category)
@@ -102,7 +102,7 @@ superheat(log(xplot.t + 1, base=2)[,category %in% cat.keep],
           bottom.label.size=0.75,
           heat.pal=viridis::inferno(10), 
           heat.pal.values=seq(0, 1, by=0.1),
-          title='Bioactivity by cell line, compound (log scale)\nprevalent compounds')
+          title='Bioactivity by cell line, compound (log l2 distance from DMSO)\nprevalent compounds')
 
 # Generate table of bioactivity by cell line/category
 bioactive.cell.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
@@ -116,7 +116,7 @@ bioactive.cell.cat %>%
   facet_wrap(~Cell_Line, scales='free_x') +
   theme(legend.position='none') +
   theme(axis.text.x=element_text(angle=90)) +
-  scale_fill_hue(l=60) +
+  scale_fill_jco() +
   ggtitle('Bioactivity by category/cell line')
   
 knitr::kable(bioactive.cell.cat)
@@ -133,7 +133,6 @@ bioactive.plate %>%
   theme_bw() +
   theme(legend.position='none') +
   theme(axis.text.x=element_text(angle=90)) +
-  scale_fill_hue(l=60) +
   ggtitle('Bioactivity by plate')
 
 knitr::kable(bioactive.plate)
@@ -165,28 +164,37 @@ compound.table <- group_by(xf, Compound_Category) %>%
 cpd.keep <- filter(compound.table, Ncpd == 5)
 xf <- filter(xf, Compound_Category %in% cpd.keep$Compound_Category)
 
-#' First, we assess performance relative to a random holdout set. That is, 80%
-#' of wells are randomly sampled to train models and the remaining 20% are used 
-#' to assess accuracy. Note: a compound can appear in both the training and test 
-#' sets but at different doses.
+#' First, we assess performance relative to a random holdout set. `r prop.train`
+#' of wells are randomly sampled to train models and the remaining wells are 
+#' used to assess accuracy. **Note:** based on this formulation, a compound can 
+#' appear in both the training and test sets but at different doses.
 #+ random_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
 ################################################################################
 # Random holdout predictions
 ################################################################################
 # Fit models for each cell line
-ypred <- lapply(unique(xf$Cell_Line), 
-                fit_cell_line,
-                x=xf,
-                model=irf,
-                model_predict=irf_predict,
-                prop=0.8
+cell.lines <- c(unique(xf$Cell_Line), 'Full')
+ypred <- mclapply(
+  cell.lines, 
+  fit_cell_line,
+  x=xf,
+  model=irf,
+  model_predict=irf_predict,
+  prop=prop.train,
+  mc.cores=n.core
 )
 
-ypred <- rbindlist(ypred)
-ypred.bag <- bag_predictions(ypred)
+ypred <- rbindlist(ypred, use.names=TRUE)
 
+#' In addition to predictions based on individual cell lines, we consider an
+#' 2 aggregate model that combines information/predictions across all cell 
+#' lines. First, we aggregate predictions by bagging (i.e. average model 
+#' predictions) across cell lines. Second, we consider "full" models trained on 
+#' data from all cell lines by concatenating features across cell lines.
+#+ random_holdout_acc, fig.height=8, fig.width=15, message=FALSE
 # Accuracy by cell line
-xplot.bag <- data.frame(Cell_Line='Aggregate') %>%
+ypred.bag <- bag_predictions(filter(ypred, Cell_Line != 'Full'))
+xplot.bag <- data.frame(Cell_Line='Bagged') %>%
   mutate(Accuracy=mean(ypred.bag$Ytrue == ypred.bag$YpredBag)) %>%
   mutate(Accuracy=round(Accuracy, 2))
 
@@ -199,10 +207,12 @@ xplot.group <- rbind(xplot.bag, xplot.cell)
 xplot.group %>%
   mutate(Cell_Line=factor(Cell_Line, levels=xplot.group$Cell_Line)) %>%
   ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', fill='#0088D1') +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
   geom_text(aes(x=Cell_Line, y=Accuracy + 0.02, label=Accuracy)) +
   theme_bw() +
-  ylim(c(0, 1))
+  theme(legend.position='none') +
+  scale_fill_nejm() +
+  ylim(c(0, 1.05))
 
 
 # Accuracy by compound category
@@ -222,28 +232,51 @@ xplot.group %>%
   geom_bar(stat='identity', position='dodge') +
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02) +
   theme_bw() +
+  scale_fill_jco() +
   ylim(0:1)
+
+# Accuracy by compound category heat map
+compounds <- unique(xplot.group$Compound_Category)
+cell.lines <- unique(xplot.group$Cell_Line)
+xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(compounds))
+
+rownames(xplot.group.hm) <- compounds
+colnames(xplot.group.hm) <- cell.lines
+superheat(
+  xplot.group.hm,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  heat.pal=viridis::inferno(10),
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label.text.angle=90
+)
 
 #' Next, we assess performance relative to a randomly held out compounds. That 
 #' is, 4 compounds from each category randomly sampled to train models and the 
-#' remaining compound from each category is used to assess accuracy. Note: 
-#' models here are evaluated on compounds they have never seen
+#' remaining compound from each category is used to assess accuracy. **Note:** 
+#' models here are evaluated on compounds they have never seen.
+#' 
+#' Plots below are the same as above but using hold-out compounds.
 #+ compound_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
 # Fit models for each cell line
-ypred <- lapply(unique(xf$Cell_Line), fit_cell_line,
-                x=xf,
-                model=irf,
-                model_predict=irf_predict,
-                holdout='compound'
+cell.lines <- c(unique(xf$Cell_Line), 'Full')
+ypred <- mclapply(
+  cell.lines, 
+  fit_cell_line,
+  x=xf,
+  model=irf,
+  model_predict=irf_predict,
+  holdout='compound',
+  mc.cores=n.core
 )
 
-ypred <- rbindlist(ypred)
-ypred.bag <- bag_predictions(ypred)
+ypred <- rbindlist(ypred, use.names=TRUE)
 
 # Accuracy by cell line
+ypred.bag <- bag_predictions(filter(ypred, Cell_Line != 'Full'))
 xplot.bag <- data.frame(Cell_Line='Aggregate') %>%
   mutate(Accuracy=mean(ypred.bag$Ytrue == ypred.bag$YpredBag)) %>%
   mutate(Accuracy=round(Accuracy, 2))
@@ -257,9 +290,11 @@ xplot.group <- rbind(xplot.bag, xplot.cell)
 rbind(xplot.bag, xplot.cell) %>%
   mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
   ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', fill='#0088D1') +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
   geom_text(aes(x=Cell_Line, y=Accuracy + 0.02, label=Accuracy)) +
+  scale_fill_nejm() +
   theme_bw() +
+  theme(legend.position='none') +
   ylim(c(0, 1))
 
 # Accuracy by compound category
@@ -268,15 +303,35 @@ xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
 
 xplot.bag <- group_by(ypred.bag, Compound_Category) %>%
   summarize(Accuracy=mean(YpredBag == Ytrue)) %>%
-  mutate(Cell_Line='Aggregate')
+  mutate(Cell_Line='Bagged')
 
 xplot.group <- rbind(xplot.bag, xplot.cell)
 
 rbind(xplot.cell, xplot.bag) %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
-  ggplot(aes(x=Cell_Line, y=Accuracy, fill=Compound_Category)) +
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02) +
   theme_bw() +
+  scale_fill_jco() +
   ylim(0:1)
+
+# Accuracy by compound category heat map
+compounds <- unique(xplot.group$Compound_Category)
+cell.lines <- unique(xplot.group$Cell_Line)
+xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(compounds))
+
+rownames(xplot.group.hm) <- compounds
+colnames(xplot.group.hm) <- cell.lines
+xplot.group.hm[xplot.group.hm < 0.5] <- 0.5
+
+superheat(
+  xplot.group.hm,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  heat.pal=viridis::inferno(10),
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label.text.angle=90
+)
+

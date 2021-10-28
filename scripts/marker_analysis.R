@@ -6,12 +6,10 @@ library(parallel)
 library(iRF)
 library(caret)
 library(superheat)
+library(ggsci)
 
-col.pal <- RColorBrewer::brewer.pal(11, 'RdYlBu')
-col.pal[6] <- '#FFFFFF'
 intensity.normalize <- TRUE
-n.core <- 12
-write.tables <- FALSE
+n.core <- 16
 
 setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
@@ -181,6 +179,7 @@ xplot.marker %>%
   geom_text(aes(x=Marker, y=Accuracy + 0.02, label=Accuracy)) +
   theme_bw() +
   ylim(c(0, 1)) +
+  scale_fill_jco() +
   theme(axis.text.x=element_text(angle=90))
 
 # Accuracy by compound category
@@ -195,6 +194,7 @@ xplot.marker %>%
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02, size=3) +
   theme_bw() +
   theme(legend.position='none') +
+  scale_fill_nejm() +
   ylim(0:1) +
   facet_wrap(~Marker) +
   theme(axis.text.x=element_text(angle=90))
@@ -212,15 +212,22 @@ group.id <- group.key$Group[match(colnames(xplot), group.key$Marker)]
 colnames(xplot) <- str_replace_all(colnames(xplot), '\\|', ', ')
 xplot[xplot < 0.7] <- 0.7
 
-superheat(xplot, 
-          membership.cols=group.id,
-          pretty.order.rows=TRUE,
-          pretty.order.cols=TRUE,
-          heat.pal=viridis::inferno(10),
-          heat.pal.values=seq(0, 1, by=0.1),
-          bottom.label='variable',
-          bottom.label.text.angle=90,
-          bottom.label.size=1)
+# Initialize column colors
+col.pal <- pal_jco()(length(unique(group.id)))
+col.cols <- col.pal[as.numeric(as.factor(group.id))]
+
+superheat(
+  xplot, 
+  membership.cols=group.id,
+  bottom.label.col=col.cols,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  heat.pal=viridis::inferno(10),
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label='variable',
+  bottom.label.text.angle=90,
+  bottom.label.size=1
+)
 
 #' Next, we assess performance relative to a randomly held out compounds. That 
 #' is, 4 compounds from each category randomly sampled to train models and the 
@@ -231,13 +238,14 @@ superheat(xplot,
 # Compound holdout predictions
 ################################################################################
 # Fit models for each cell line
-ypred <- mclapply(markers, 
-                fit_marker,
-                x=xf,
-                model=irf,
-                model_predict=irf_predict,
-                holdout='compound',
-                mc.cores=n.core
+ypred <- mclapply(
+  markers, 
+  fit_marker,
+  x=xf,
+  model=irf,
+  model_predict=irf_predict,
+  holdout='compound',
+  mc.cores=n.core
 )
 
 ypred <- rbindlist(ypred)
@@ -254,6 +262,7 @@ xplot.marker %>%
   geom_text(aes(x=Marker, y=Accuracy + 0.02, label=Accuracy)) +
   theme_bw() +
   ylim(c(0, 1)) +
+  scale_fill_jco() +
   theme(axis.text.x=element_text(angle=90))
 
 # Accuracy by compound category
@@ -269,6 +278,7 @@ xplot.marker %>%
   theme_bw() +
   theme(legend.position='none') +
   ylim(0:1) +
+  scale_fill_nejm() +
   facet_wrap(~Marker) +
   theme(axis.text.x=element_text(angle=90))
 
@@ -285,12 +295,19 @@ group.id <- group.key$Group[match(colnames(xplot), group.key$Marker)]
 colnames(xplot) <- str_replace_all(colnames(xplot), '\\|', ', ')
 xplot[xplot < 0.5] <- 0.5
 
-superheat(xplot, 
-          membership.cols=group.id,
-          pretty.order.rows=TRUE,
-          pretty.order.cols=TRUE,
-          heat.pal=viridis::inferno(10),
-          heat.pal.values=seq(0, 1, by=0.1),
-          bottom.label='variable',
-          bottom.label.text.angle=90,
-          bottom.label.size=1)
+# Initialize column colors
+col.pal <- pal_jco()(length(unique(group.id)))
+col.cols <- col.pal[as.numeric(as.factor(group.id))]
+
+superheat(
+  xplot, 
+  membership.cols=group.id,
+  bottom.label.col=col.cols,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  heat.pal=viridis::inferno(10),
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label='variable',
+  bottom.label.text.angle=90,
+  bottom.label.size=1
+)

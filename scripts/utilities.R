@@ -66,11 +66,32 @@ fit_cell_line <- function(x,
                           model_predict, 
                           holdout='random', 
                           prop=0.9,
-                          reps=50) {
+                          reps=50,
+                          n.core=1,
+                          full.samples=6) {
   
-  xc <- filter(x, Cell_Line == cell.line)
-  xx <- select(xc, matches('^nonborder'))
-  yy <- as.factor(xc$Compound_Category)
+  if (cell.line != 'Full') {
+    xc <- filter(x, Cell_Line == cell.line) %>%
+      select(matches('(^nonborder|Compound_ID|Cell_Line|Compound_Category|Dose_Category)'))
+    
+    xx <- select(xc, matches('^nonborder'))
+    yy <- as.factor(xc$Compound_Category)
+  } else {
+    # TODO: random plate grouping
+    xc <- x %>%
+      select(matches('(^nonborder|Compound_ID|Cell_Line|Compound_Category|Dose_Category)')) 
+    
+    xdata <- expand_cell_data(xc, full.samples=full.samples, n.core=n.core)
+    xx <- xdata$x
+    yy <- xdata$y
+    
+    xc <- data.frame(
+      Compound_Category=yy, 
+      Cell_Line='Full', 
+      Dose_Category=xdata$dose,
+      Compound_ID=xdata$compound
+    )
+  }
   
   # Set training set
   if (holdout == 'random') {
@@ -109,6 +130,33 @@ fit_cell_line <- function(x,
     select(-ID)
 
   return(out)
+}
+
+expand_cell_data <- function(x, full.samples=6, n.core=1) {
+  # Generate feature set from multiple cell lines for each compound/dose pair
+  groups <- str_c(x$Compound_ID, ', ', x$Dose_Category)
+  
+  # Generate feature matrix
+  groups.gen <- rep(unique(groups), full.samples)
+  out.x <- mclapply(groups.gen, function(g) {
+    xx <- filter(x, groups == g) %>% 
+      group_by(Cell_Line) %>%
+      sample_n(1) %>%
+      ungroup() %>%
+      select(matches('^nonborder'))
+    return(unlist(c(xx)))
+  }, mc.cores=n.core)
+  
+  out.x <- do.call(rbind, out.x)
+  
+  out.y <- mclapply(groups.gen, function(g) {
+    yy <- unique(filter(x, groups == g)$Compound_Category)
+  }, mc.cores=n.core)
+  
+  out.y <- as.factor(unlist(out.y))
+  dose <- str_remove_all(groups.gen, '^.*, ')
+  compound <- str_remove_all(groups.gen, ',.*$')
+  return(list(x=out.x, y=out.y, dose=dose, compound=compound))
 }
 
 fit_wrap <- function(x, y, id.train, model, model_predict) {
@@ -178,8 +226,9 @@ expand_category <- function(x, category) {
 
 bag_predictions <- function(ypred) {
   # Average compound predictions across cell lines
-  ypred.bag <- lapply(unique(ypred$Compound_Dose), function(g) {
-    out <- filter(ypred, Compound_Dose == g) %>% 
+  ypred <- mutate(ypred, Group=str_c(Compound_ID, ', ', Dose_Category))
+  ypred.bag <- lapply(unique(ypred$Group), function(g) {
+    out <- filter(ypred, Group == g) %>% 
       select(Ypred, Compound_Category, Ytrue)
     
     ypred <- colMeans(do.call(rbind, out$Ypred))
