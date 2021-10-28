@@ -1,3 +1,8 @@
+median_impute <- function(x) {
+  x[is.na(x)] <- median(x, na.rm=TRUE)
+  return(x)
+}
+
 ################################################################################
 # Modeling functions
 ################################################################################
@@ -79,7 +84,9 @@ fit_cell_line <- function(x,
       summarize(Compound_ID=list(unique(Compound_ID)))
     
     cpd.train <- lapply(1:reps, function(i) {
-      sapply(cpd.table$Compound_ID, sample, size=length(cpd.table$Compound_ID) - 1)
+      sapply(cpd.table$Compound_ID, function(z) {
+        sample(z, length(z) - 1)
+      })
     })
     
     id.train <- lapply(cpd.train, function(i) {
@@ -196,7 +203,7 @@ intensity_normalize <- function(x) {
   col <- as.numeric(x$Col)
   features <- colnames(x) %>% str_subset('^nonborder')
 
-    for (f in features) {
+  for (f in features) {
     x[[f]] <- intensity_normalize_(col, x[[f]])
   }
   
@@ -205,8 +212,12 @@ intensity_normalize <- function(x) {
 
 intensity_normalize_ <- function(col, y) {
   # Normalize intensity as residuals from lm using column as predictor
+  out <- rep(NA, length(y))
+  names(out) <- 1:length(y)
+  
   fit <- lm(y ~ as.numeric(col))
-  return(fit$residuals)
+  out[names(fit$residuals)] <- fit$residuals
+  return(out)
 }
 
 

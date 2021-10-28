@@ -33,9 +33,7 @@ x <- filter(x, Cell_Line == 'A549')
 #' 
 #' We then ask whether a given well (any compound) is further from the DMSO
 #' point cloud center than the maximal DMSO distance. Repeating this process
-#' across many subsamples allows us to generate a bioactivity p-value. Tables 
-#' below summarize bioactivity by plate, compound category (in reference set),
-#' and cell line.
+#' across many subsamples allows us to generate a bioactivity p-value.
 #+ bioactivity
 ################################################################################
 # Bioactivity
@@ -54,38 +52,7 @@ xdist <- mclapply(unique(x$PlateID), function(p) {
 
 xdist <- rbindlist(xdist)
 
-# Bioactivity by plate
-bioactive.plate <- group_by(xdist, PlateID) %>% 
-  summarize(PropBioactive=mean(pval == 0))
-
-print(bioactive.plate)
-write.csv(file='results/bioactivity_plate.csv', bioactive.plate, quote=FALSE)
-
-# Bioactivity by compound category
-bioactive.category <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
-  group_by(Compound_Category) %>% 
-  summarize(PropBioactive=mean(pval == 0))
-
-print(bioactive.category)
-write.csv(file='results/bioactivity_category.csv', bioactive.category, quote=FALSE)
-
-# Bioactivity by cell line
-bioactive.cell <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
-  group_by(Cell_Line) %>% 
-  summarize(PropBioactive=mean(pval == 0))
-
-print(bioactive.cell)
-write.csv(file='results/bioactivity_category.csv', bioactive.cell, quote=FALSE)
-
-# Bioactivity by cell line/category
-bioactive.cell.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
-  group_by(Compound_Category, Cell_Line) %>% 
-  summarize(PropBioactive=mean(pval == 0))
-
-print(bioactive.cell.cat)
-write.csv(file='results/bioactivity_cell_category.csv', bioactive.cell.cat, quote=FALSE)
-
-# Filter to reference compound doses that are bioactive in > 1 cell line
+# Filter to reference compound doses that are bioactive
 xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   filter(pval == 0) %>%
   mutate(Compound_Dose=str_c(Compound_ID, ', ', Dose_Category))
@@ -168,7 +135,7 @@ xplot.marker %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
-  geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02) +
+  geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02, size=3) +
   theme_bw() +
   ylim(0:1) +
   theme(axis.text.x=element_text(angle=90))
@@ -214,7 +181,7 @@ xplot.marker %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
-  geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02) +
+  geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02, size=3) +
   theme_bw() +
   ylim(0:1) +
   theme(axis.text.x=element_text(angle=90))
