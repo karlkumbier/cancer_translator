@@ -5,11 +5,13 @@ library(tidytext)
 library(parallel)
 library(iRF)
 library(caret)
+library(superheat)
 
 col.pal <- RColorBrewer::brewer.pal(11, 'RdYlBu')
 col.pal[6] <- '#FFFFFF'
 intensity.normalize <- TRUE
-n.core <- 6
+n.core <- 12
+write.tables <- FALSE
 
 setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
@@ -22,18 +24,36 @@ load(fin)
 # Filter to A549
 x <- filter(x, Cell_Line == 'A549')
 
+options(knitr.table.format = function() {
+  if (knitr::is_latex_output())
+    "latex" else "pipe"
+})
+
+#' # Overview
+#' In this notebook, we consider the utility of different marker sets for 
+#' compound target prediction. All analyses are restricted to A549 cell line.
+#' 
 #' # Bioactivity filtering
-#' Before training compound classifiers, we filter out compounds/doses that
-#' cannot be distinguished from DMSO. Specifically, we (i) take a subsample
-#' of DMSO wells (ii) compute the center of the DMSO point cloud by taking
-#' average feature values across each well in the subsample (iii) compute the
-#' l2 distance between each DMSO well in the subsample and the DMSO point cloud 
-#' center (iv) define the DMSO maximal distance as the maximum distance (from 
-#' iii) over all subsampled wells.
+#' Before training compound classifiers, we filter out compounds/dose pairs that
+#' cannot be distinguished from DMSO. Bioactivity relative to DMSO is evaluated 
+#' as follows:
 #' 
 #' We then ask whether a given well (any compound) is further from the DMSO
 #' point cloud center than the maximal DMSO distance. Repeating this process
 #' across many subsamples allows us to generate a bioactivity p-value.
+#' 1. Subsample DMSO wells
+#' 2. Compute the center of the DMSO point cloud by taking average feature 
+#' values across each well in the subsample.
+#' 3. Compute the l2 distance between each DMSO well in the subsample and the 
+#' DMSO point cloud center.
+#' 4. Define the DMSO maximal distance as the maximum distance (from 3) over all 
+#' subsampled wells.
+#' 5. Any well (i.e. compound) that is further from the DMSO point cloud center 
+#' than the maximal DMSO distance is called as bioactive in the given subsample. 
+#'
+#' Repeating this process across many subsamples allows us to generate a 
+#' bioactivity p-value. Tablesbelow summarize bioactivity by plate, compound 
+#' category (in reference set), and cell line.
 #+ bioactivity
 ################################################################################
 # Bioactivity
@@ -44,7 +64,7 @@ setwd('~/github/cancer_translator/')
 l2norm <- function(z) z / sqrt(sum(z ^ 2))
 x <- mutate_if(x, is.numeric, l2norm)
 
-# Compute bioactivity scores for each well
+# Compute bioactivity scores for each well by plate
 xdist <- mclapply(unique(x$PlateID), function(p) {
   out <- filter(x, PlateID == p) %>% dplyr::select(-matches('^PC'))
   return(bioactivity(out))
@@ -58,9 +78,10 @@ xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   mutate(Compound_Dose=str_c(Compound_ID, ', ', Dose_Category))
 
 #' # Modeling
-#' For each cell line, we train classifiers to predict compound category from
+#' For each marker set, we train classifiers to predict compound category from
 #' phenotypic profiling features. Compounds/doses are filtered to include only 
-#' those that are bioactive in at least one cell line.
+#' those that are bioactive, while categories are filtered to include only 
+#' reference compound categories with >= 5 compounds.
 #+ modeling, fig.height=8, fig.width=18, message=FALSE, warnings=FALSE, echo=FALSE
 ################################################################################
 # Modeling
@@ -75,52 +96,88 @@ compound.table <- group_by(xf, Compound_Category) %>%
   summarize(Ncpd=length(unique(Compound_ID)))
 
 # Filter out compounds with low prevalence
-cpd.keep <- filter(compound.table, Ncpd == 5)
+cpd.keep <- filter(compound.table, Ncpd >= 5)
 xf <- filter(xf, Compound_Category %in% cpd.keep$Compound_Category)
 
+#' Below, we assess the contribution of different channels to target prediction
+#' accuracy. Channels are defined as one of: `HOECHST`, `Mitotracker`, `SYTO14`,
+#' `Alexa`, or `morphology` — where `morphology` is any feature not specific to 
+#' one of the first four channels. We train each model using the subset of 
+#' features indicated and evaluate performance on a hold-out test set.
+#' 
 #' First, we assess performance relative to a random holdout set. That is, 80%
 #' of wells are randomly sampled to train models and the remaining 20% are used 
 #' to assess accuracy. Note: a compound can appear in both the training and test 
 #' sets but at different doses.
-#+ random_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
+#+ random_holdout, fig.height=12, fig.width=18, message=FALSE, echo=FALSE
 ################################################################################
 # Random holdout predictions
 ################################################################################
 markers <- c('HOECHST', 'Mitotracker', 'SYTO14', 'Alexa')
 markers.re <- str_c('(', str_c(markers, collapse='|'), ')')
 
-id.morphology <- !str_detect(colnames(xf), markers.re  )
+id.morphology <- !str_detect(colnames(xf), markers.re )
 id.feat <- str_detect(colnames(xf), 'nonborder')
 id <- id.feat & id.morphology
 colnames(xf)[id] <- str_c(colnames(xf)[id], 'morphology')
 
-markers1 <- lapply(markers, function(m) c(m, 'morphology'))
+# Generate marker set combinations to be evaluated
+markers1 <- markers
+markers1.morph <- lapply(markers, function(m) c(m, 'morphology'))
+
 markers2 <- combn(markers, 2, simplify=FALSE)
-markers2 <- lapply(markers2, function(m) c(m, 'morphology'))
+markers2.morph <- lapply(markers2, function(m) c(m, 'morphology'))
+
+markers3 <- combn(markers, 3, simplify=FALSE)
+markers3.morph <- lapply(markers3, function(m) c(m, 'morphology'))
 
 markers4 <- list(markers)
-markers11 <- lapply(markers, function(m) m)
+markers4.morph <- lapply(markers4, function(m) c(m, 'morphology'))
+
+markers <- c(
+  'morphology',
+  markers1, 
+  markers1.morph, 
+  markers2, 
+  markers2.morph, 
+  markers3, 
+  markers3.morph, 
+  markers4, 
+  markers4.morph
+)
+
+group <- c(
+  'morphology',
+  rep(c('1 marker', '1 marker, morphology'), each=length(markers1)),
+  rep(c('2 marker', '2 marker, morphology'), each=length(markers2)),
+  rep(c('3 marker', '3 marker, morphology'), each=length(markers3)),
+  rep(c('4 marker', '4 marker, morphology'), each=length(markers4))
+)
+
+group.key <- data.table(Marker=markers, Group=group) %>%
+  mutate(Marker=sapply(Marker, function(m) str_c(m, collapse='|')))
 
 # Fit models for each cell line
-markers <- c(markers1, markers2, markers11, markers4)
-ypred <- lapply(markers, 
+ypred <- mclapply(markers, 
                 fit_marker,
                 x=xf,
                 model=irf,
                 model_predict=irf_predict,
-                prop=0.8
+                prop=0.8,
+                mc.cores=n.core
 )
 
 ypred <- rbindlist(ypred)
 
 xplot.marker <- group_by(ypred, Marker) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
-  mutate(Accuracy=round(Accuracy, 2))
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  left_join(group.key, by='Marker')
 
 xplot.marker %>%
   mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', fill='#0088D1') +
+  geom_bar(stat='identity', aes(fill=Group)) +
   geom_text(aes(x=Marker, y=Accuracy + 0.02, label=Accuracy)) +
   theme_bw() +
   ylim(c(0, 1)) +
@@ -133,40 +190,67 @@ xplot.marker <- group_by(ypred, Marker, Compound_Category) %>%
 xplot.marker %>%
   mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
-  ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy, fill=Compound_Category)) +
+  ggplot(aes(x=reorder(Compound_Category, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02, size=3) +
   theme_bw() +
+  theme(legend.position='none') +
   ylim(0:1) +
+  facet_wrap(~Marker) +
   theme(axis.text.x=element_text(angle=90))
+
+
+# Heatmap visualization by category
+ncpd <- length(unique(xplot.marker$Compound_Category))
+xplot <- matrix(xplot.marker$Accuracy, nrow=ncpd)
+
+rownames(xplot) <- unique(xplot.marker$Compound_Category)
+colnames(xplot) <- unique(xplot.marker$Marker)
+group.id <- group.key$Group[match(colnames(xplot), group.key$Marker)]
+
+# Threshold at minimum 0.7 for visualization
+colnames(xplot) <- str_replace_all(colnames(xplot), '\\|', ', ')
+xplot[xplot < 0.7] <- 0.7
+
+superheat(xplot, 
+          membership.cols=group.id,
+          pretty.order.rows=TRUE,
+          pretty.order.cols=TRUE,
+          heat.pal=viridis::inferno(10),
+          heat.pal.values=seq(0, 1, by=0.1),
+          bottom.label='variable',
+          bottom.label.text.angle=90,
+          bottom.label.size=1)
 
 #' Next, we assess performance relative to a randomly held out compounds. That 
 #' is, 4 compounds from each category randomly sampled to train models and the 
 #' remaining compound from each category is used to assess accuracy. Note: 
 #' models here are evaluated on compounds they have never seen
-#+ compound_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
+#+ compound_holdout, fig.height=12, fig.width=18, message=FALSE, echo=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
 # Fit models for each cell line
-ypred <- lapply(markers, 
+ypred <- mclapply(markers, 
                 fit_marker,
                 x=xf,
                 model=irf,
                 model_predict=irf_predict,
-                holdout='compound'
+                holdout='compound',
+                mc.cores=n.core
 )
 
 ypred <- rbindlist(ypred)
 
 xplot.marker <- group_by(ypred, Marker) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
-  mutate(Accuracy=round(Accuracy, 2))
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  left_join(group.key, by='Marker')
 
 xplot.marker %>%
   mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', fill='#0088D1') +
+  geom_bar(stat='identity', aes(fill=Group)) +
   geom_text(aes(x=Marker, y=Accuracy + 0.02, label=Accuracy)) +
   theme_bw() +
   ylim(c(0, 1)) +
@@ -179,9 +263,34 @@ xplot.marker <- group_by(ypred, Marker, Compound_Category) %>%
 xplot.marker %>%
   mutate(Marker=str_replace_all(Marker, '\\|', ', ')) %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
-  ggplot(aes(x=reorder(Marker, Accuracy), y=Accuracy, fill=Compound_Category)) +
+  ggplot(aes(x=reorder(Compound_Category, Accuracy), y=Accuracy, fill=Compound_Category)) +
   geom_bar(stat='identity', position='dodge') +
   geom_text(aes(label=Accuracy), position=position_dodge(width=0.9), vjust=-0.02, size=3) +
   theme_bw() +
+  theme(legend.position='none') +
   ylim(0:1) +
+  facet_wrap(~Marker) +
   theme(axis.text.x=element_text(angle=90))
+
+
+# Heatmap visualization by category
+ncpd <- length(unique(xplot.marker$Compound_Category))
+xplot <- matrix(xplot.marker$Accuracy, nrow=ncpd)
+
+rownames(xplot) <- unique(xplot.marker$Compound_Category)
+colnames(xplot) <- unique(xplot.marker$Marker)
+group.id <- group.key$Group[match(colnames(xplot), group.key$Marker)]
+
+# Threshold at minimum 0.5 for visualization
+colnames(xplot) <- str_replace_all(colnames(xplot), '\\|', ', ')
+xplot[xplot < 0.5] <- 0.5
+
+superheat(xplot, 
+          membership.cols=group.id,
+          pretty.order.rows=TRUE,
+          pretty.order.cols=TRUE,
+          heat.pal=viridis::inferno(10),
+          heat.pal.values=seq(0, 1, by=0.1),
+          bottom.label='variable',
+          bottom.label.text.angle=90,
+          bottom.label.size=1)
