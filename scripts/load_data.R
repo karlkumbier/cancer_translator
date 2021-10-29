@@ -4,18 +4,15 @@ library(rprofiler)
 library(parallel)
 
 setwd('/awlab/Lab_temp/Louise/opfeatures/')
-plate.dir <- 'LH_CDC_1/plates/'
+plate.dir <- 'LH_CDC_1/raw_data/'
 platemap.dir <- 'LH_CDC_1/platemaps/'
 
-plates <- list.dirs(plate.dir, recursive=FALSE) %>% 
-  str_subset('reimaged', negate=TRUE)
-
+plate.dirs <- list.dirs(plate.dir, recursive=TRUE)
 platemaps <- str_c(platemap.dir, list.files(platemap.dir))
 
 nfeat <- 93
-n.core <- 16
-prop.dmso <- 0.25
-
+n.core <- 24
+prop.dmso <- 1
 
 read_plate <- function(plate.dir, nfeat) {
   
@@ -26,7 +23,7 @@ read_plate <- function(plate.dir, nfeat) {
   }
   
   x <- fread(str_c(eval.dir, '/Objects_Population - nonborder.txt'), skip=9)
-  x <- mutate(x, PlateID=sapply(str_split(plate.dir, '/'), tail, 1))
+  x <- mutate(x, PlateID=sapply(str_split(plate.dir, '/'), tail, 2)[1])
               
   # Check that output will contain specified number of features
   if (ncol(x) != (nfeat + 1)) {
@@ -97,15 +94,18 @@ xmeta <- rbindlist(xmeta) %>% filter(!is.na(Compound_ID))
 ################################################################################
 # Load in data for each plate
 ################################################################################
+plates <- unique(xmeta$PlateID)
 
 x <- mclapply(plates, function(p) {
   set.seed(47)
   tryCatch({
-    plate.id <- str_remove_all(p, "^.*plates//")
-    xmeta.p <- filter(xmeta, PlateID == plate.id)
+    xmeta.p <- filter(xmeta, PlateID == p)
     
     # Match metadata/data
-    out <- read_plate(p, nfeat=nfeat) %>% mutate(WellID=str_c(Row, '-', Column))
+    plate.dir.p <- str_subset(plate.dirs, p) %>% str_subset('Evaluation')
+    plate.dir.p <- tail(plate.dir.p, 1)
+
+    out <- read_plate(plate.dir.p, nfeat=nfeat) %>% mutate(WellID=str_c(Row, '-', Column))
     xmeta.p <- xmeta.p[match(out$WellID, xmeta.p$WellID),]
     
     out <- dplyr::select(out, matches('(PlateID|WellID|^nonborder.*)'))
@@ -115,7 +115,7 @@ x <- mclapply(plates, function(p) {
     # Match metadata with KS profiles
     xmeta.p <- distinct(xmeta.p)
     xmeta.p <- xmeta.p[match(xks$WellID, xmeta.p$WellID),]
-    return(list(xks=xks, xmeta=xmeta))
+    return(list(xks=xks, xmeta=xmeta.p))
   }, error=function(e) {
     print(p)
     return(NULL)
