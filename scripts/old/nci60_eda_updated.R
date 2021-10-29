@@ -14,6 +14,7 @@ library(superheat)
 setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
 
+n.core <- 16
 train.prop <- 0.8
 model <- irf_fit
 
@@ -92,7 +93,7 @@ class.table <- data.frame(Class=class.id) %>%
   summarize(Count=n()) %>%
   arrange(desc(Count))
 
-class.f <- filter(class.table, Count >= 10)
+class.f <- filter(class.table, Count >= 20)
 x.activity.f <- x.activity[class.id %in% class.f$Class,]
 class.id.f <- class.id[class.id %in% class.f$Class]
 
@@ -101,7 +102,7 @@ class.id.f <- class.id[class.id %in% class.f$Class]
 #' cluster relative to PC1 and PC2 but show high variability.
 #+ bioactivity_heatmap, fig.height=10, fig.width=15
 # Bioactivity heatmap visualization
-xplot <- apply(x.activity.f, MAR=2, rank)
+xplot <- x.activity.f#apply(x.activity.f, MAR=2, rank)
 type <- as.factor(str_remove_all(colnames(xplot), ':.*'))
 type.pal <- scales::hue_pal()(length(unique(type)))
 
@@ -136,6 +137,8 @@ data.frame(xpca$x, Class=class.id.f) %>%
 #+ supervised_modeling, warning=FALSE
 # Convery y indexing to range 0:nclass
 y <- as.numeric(as.factor(as.numeric(class.id.f))) - 1
+y.levels <- sapply(unique(y), function(yy) unique(class.id.f[y == yy]))
+y.levels <- data.frame(ID=unique(y), Class=y.levels)
 x <- x.activity.f
 ncell <- 2:10
 n.replicate <- 50
@@ -161,10 +164,11 @@ fits <- mclapply(1:n.replicate, function(i) {
   
   # Fit RF to predict moa from bioactivity
   out <- model(x, y, id.train, id.test, ncell)
-  return(list(accuracy=out$accuracy, selected=out$selected))
-}, mc.cores=10)
+  return(list(accuracy=out$accuracy, class.accuracy=out$class.accuracy, selected=out$selected))
+}, mc.cores=n.core)
 
 accuracy <- lapply(fits, function(f) as.matrix(f$accuracy))
+class.accuracy <- lapply(fits, function(f) f$class.accuracy)
 selected <- lapply(fits, function(f) f$selected)
 
 #+ supervised_modeling_accuracy, warning=FALSE, fig.height=10, fig.width=10
@@ -176,6 +180,24 @@ reshape2::melt(accuracy) %>%
   ylab("Top-1 classification accuracy") +
   ggtitle('Model accuracy by cell lines used')
 
+reshape2::melt(class.accuracy) %>%
+  mutate(ID=Var1) %>%
+  left_join(y.levels, b='ID') %>%
+  mutate(Ncell=as.factor(ncell[Var2])) %>%
+  ggplot(aes(x=Ncell, y=value)) +
+  geom_boxplot(fill='#0388D1') +
+  theme_bw() +
+  facet_wrap(~Class) +
+  ylab("Top-1 classification accuracy") +
+  ggtitle('Model accuracy by class, cell lines used')
+  
+data.frame(Class=class.id.f) %>%
+  group_by(Class) %>%
+  summarize(Count=n()) %>%
+  ggplot(aes(x=reorder(Class, Count), y=Count)) +
+  geom_bar(stat='identity', fill='#0388D1') +
+  theme_bw()
+  
 #+ supervised_modeling_beta, warning=FALSE, fig.height=18, fig.width=12
 reshape2::melt(selected) %>%
   rename(CellLine=Var1, Ncell=Var2, Rep=L1) %>%
@@ -245,7 +267,7 @@ fits.null <- mclapply(1:n.replicate, function(i) {
   yy <- sample(y)
   out <- model(x, yy, id.train, id.test, ncell)
   return(out$accuracy)
-}, mc.cores=10)
+}, mc.cores=n.core)
 
 accuracy <- lapply(fits.null, as.matrix)
 reshape2::melt(accuracy) %>%
@@ -286,7 +308,7 @@ fits.null <- mclapply(1:n.replicate, function(i) {
   out.opt <-  model(x, y, id.train, id.test, ncell)
   
   return(rbind(out.null$accuracy, out.opt$accuracy))
-}, mc.cores=10)
+}, mc.cores=n.core)
 
 
 reshape2::melt(fits.null) %>%
