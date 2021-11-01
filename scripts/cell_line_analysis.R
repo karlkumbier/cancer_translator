@@ -20,7 +20,6 @@ intensity.normalize <- TRUE
 fin <- str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata')
 load(fin)
 
-# TODO: clean compound category names
 select_category <- function(x) na.omit(x)[1]
 
 xcat.key <- select(x, Compound_ID, Compound_Category) %>%
@@ -34,12 +33,15 @@ options(knitr.table.format = function() {
 
 #' # Bioactivity filtering
 #' Before training compound classifiers, we filter out compounds/doses that
-#' cannot be distinguished from DMSO. Specifically, we (i) take a subsample
-#' of DMSO wells (ii) compute the center of the DMSO point cloud (i.e.
-#' average feature values across each well in the subsample) (iii) compute the
-#' l2 distance between each DMSO well in the subsample and the DMSO point cloud 
-#' center (iv) define the DMSO maximal distance as the maximum distance (from 
-#' iii) over all subsampled wells.
+#' cannot be distinguished from DMSO. Specifically, we 
+#'
+#' 1. Subsample DMSO wells 
+#' 2. Compute the center of the DMSO point cloud (i.e. average feature values 
+#' across each well in the subsample) 
+#' 3. Compute the l2 distance between each DMSO well in the subsample and the 
+#' DMSO point cloud center 
+#' 4. Define the DMSO maximal distance as the maximum distance (from 3) over all 
+#' subsampled wells.
 #' 
 #' We then ask whether a given well compound/dose is further from the DMSO
 #' point cloud center than the maximal DMSO distance. Repeating this process
@@ -67,7 +69,7 @@ xdist <- rbindlist(xdist)
 # Group bioactivity scores by cell line/compound
 n.cell.line <- length(unique(x$Cell_Line))
 xgroup <- group_by(xdist, Cell_Line, Compound_ID, Dose_Category) %>% 
-  summarize(DistNorm=mean(DistNorm), .groups='drop') %>%
+  summarize(DistNorm=mean(DistNorm), pval=mean(pval), .groups='drop') %>%
   group_by(Compound_ID) %>%
   mutate(Count=n()) %>%
   filter(Count == n.cell.line) %>%
@@ -75,6 +77,24 @@ xgroup <- group_by(xdist, Cell_Line, Compound_ID, Dose_Category) %>%
   arrange(Compound_ID, Cell_Line) %>%
   left_join(xcat.key, by='Compound_ID')
 
+#' The figure below reports normalized distance from DMSO against p-value for
+#' compounds evaluated across all cell lines. Each point corresponds to a single
+#' compound/dose.
+#+ dist_v_p, fig.height=8, fig.width=12
+# Plot pvalue x dist
+ggplot(xgroup, aes(x=DistNorm, y=pval, col=Cell_Line)) +
+  geom_jitter(alpha=0.5, width=0, height=0.025) +
+  facet_wrap(~Cell_Line) +
+  geom_vline(xintercept=1, color='grey', linetype=2) +
+  theme_bw() +
+  theme(legend.position='none') +
+  scale_color_nejm()
+
+#' To assess differential activity across cell lines, we report bioactivity, 
+#' measured as the relative distance from DMSO, for each compound/dose 
+#' combination. Figures below show this distance for (i) all compounds (ii) 
+#' compound categories with more than 25 instances (not including "Other").
+#+ bioactivity_dist, fig.height=8, fig.width=12
 # Format cell x compound bioactivity for visualization
 xplot <- matrix(xgroup$DistNorm, nrow=n.cell.line)
 rownames(xplot) <- unique(xgroup$Cell_Line)
@@ -89,9 +109,9 @@ superheat(log(xplot.t + 1, base=2),
           pretty.order.cols=TRUE,
           heat.pal=viridis::inferno(10), 
           heat.pal.values=seq(0, 1, by=0.1),
-          title='Bioactivity by cell line, compound (log l2 distance from DMSO)\nall compounds')
+          title='Bioactivity (log l2 distance from DMSO) by cell line, compound \nall compounds')
 
-# Plot bioactivity by cell line, coompound category
+# Plot bioactivity by cell line, compound category
 cat.table <- table(category)
 cat.keep <- setdiff(names(cat.table[cat.table > 25]), 'Others')
 superheat(log(xplot.t + 1, base=2)[,category %in% cat.keep],
@@ -104,12 +124,25 @@ superheat(log(xplot.t + 1, base=2)[,category %in% cat.keep],
           heat.pal.values=seq(0, 1, by=0.1),
           title='Bioactivity by cell line, compound (log l2 distance from DMSO)\nprevalent compounds')
 
+#' Finally, we report the proportion of bioactive treatments (compound/dose 
+#' pairs) by cell line and across all cell lines. For an individual cell line, 
+#' we define treatments with p-value = 0 as bioactive. For the full cell line 
+#' set, we take the minimum  (across cell lines) p-value to define bioactivity.
+#+ bioactivity, fig.height=8, fig.width=12
 # Generate table of bioactivity by cell line/category
 bioactive.cell.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   group_by(Compound_Category, Cell_Line) %>% 
-  summarize(PropBioactive=mean(pval == 0))
+  summarize(PropBioactive=mean(pval == 0), .groups='drop')
 
-bioactive.cell.cat %>%
+bioactive.all.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
+  group_by(Compound_ID, Compound_Category, Dose_Category) %>%
+  summarize(pval=min(pval), .groups='drop') %>%
+  group_by(Compound_Category) %>%
+  summarize(PropBioactive=mean(pval == 0), .groups='drop') %>%
+  mutate(Cell_Line='Full') %>%
+  select(Compound_Category, Cell_Line, PropBioactive)
+
+rbind(bioactive.cell.cat, bioactive.all.cat) %>%
   ggplot(aes(x=reorder_within(Compound_Category, PropBioactive, Cell_Line), y=PropBioactive)) +
   geom_bar(stat='identity', aes(fill=Compound_Category)) +
   theme_bw() +
@@ -117,6 +150,16 @@ bioactive.cell.cat %>%
   theme(legend.position='none') +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_jco() +
+  ggtitle('Bioactivity by category/cell line')
+
+rbind(bioactive.cell.cat, bioactive.all.cat) %>%
+  ggplot(aes(x=reorder_within(Cell_Line, PropBioactive, Compound_Category), y=PropBioactive)) +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
+  theme_bw() +
+  facet_wrap(~Compound_Category, scales='free_x') +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_nejm() +
   ggtitle('Bioactivity by category/cell line')
   
 knitr::kable(bioactive.cell.cat)
@@ -146,7 +189,8 @@ xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
 #' # Modeling
 #' For each cell line, we train classifiers to predict compound category from
 #' phenotypic profiling features. Compounds/doses are filtered to include only 
-#' those that are bioactive in at least one cell line.
+#' those that are bioactive in at least one cell line (for at least one 
+#' replicate).
 #+ modeling, fig.height=8, fig.width=15, message=FALSE, warnings=FALSE, echo=FALSE
 ################################################################################
 # Modeling
@@ -214,6 +258,45 @@ xplot.group %>%
   scale_fill_nejm() +
   ylim(c(0, 1.05))
 
+# Accuracy by cell line, dose
+xplot.bag <- mutate(ypred.bag, Dose=str_remove_all(Compound_Dose, '^.*, ')) %>%
+  ungroup() %>%
+  group_by(Dose) %>%
+  summarize(Accuracy=mean(Ytrue == YpredBag)) %>%
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Cell_Line='Bagged') %>%
+  rename(Dose_Category=Dose) %>%
+  select(Cell_Line, Dose_Category, Accuracy)
+
+xplot.cell <- group_by(ypred, Cell_Line, Dose_Category) %>%
+  summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
+  mutate(Accuracy=round(Accuracy, 2))
+
+xplot.group <- rbind(xplot.bag, xplot.cell)
+
+xplot.group %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder_within(Cell_Line, Accuracy, Dose_Category), y=Accuracy)) +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
+  geom_text(aes(x=reorder_within(Cell_Line, Accuracy, Dose_Category), y=Accuracy + 0.02, label=Accuracy)) +
+  theme_bw() +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  facet_wrap(~Dose_Category, scales='free_x') +
+  scale_fill_nejm() +
+  ylim(c(0, 1.05))
+
+xplot.group %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder_within(Dose_Category, Accuracy, Cell_Line), y=Accuracy)) +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
+  geom_text(aes(x=reorder_within(Dose_Category, Accuracy, Cell_Line), y=Accuracy + 0.02, label=Accuracy)) +
+  theme_bw() +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  facet_wrap(~Cell_Line, scales='free_x') +
+  scale_fill_nejm() +
+  ylim(c(0, 1.05))
 
 # Accuracy by compound category
 xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
@@ -250,6 +333,44 @@ superheat(
   heat.pal.values=seq(0, 1, by=0.1),
   bottom.label.text.angle=90
 )
+
+#' To assess model performance wrt sampling variability, we compute the average
+#' accuracy for each compound/dose/cell line category. 
+#+ pred_variaiblity_rand, fig.height=8, fig.width=12
+xplot.cell <- mutate(ypred, Group=str_c(Compound_ID, ', ', Dose_Category)) %>%
+  group_by(Cell_Line, Group, Compound_Category) %>%
+  summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
+  mutate(Accuracy=round(Accuracy, 2))
+
+xplot.bag <- rename(ypred.bag, Group=Compound_Dose) %>%
+  mutate(Cell_Line='Bagged') %>%
+  select(Cell_Line, Group, Compound_Category, Accuracy)
+
+xplot.group <- rbind(xplot.cell, xplot.bag)
+
+xplot.group %>%
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy, fill=Cell_Line)) +
+  geom_boxplot(aes(fill=Cell_Line, col=Cell_Line), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(fill=Cell_Line, col=Cell_Line), height=0, width=0.15) +
+  theme_bw() +
+  scale_fill_nejm() +
+  scale_color_nejm() +
+  ylim(0:1)
+
+xplot.group %>%
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Dose=str_remove_all(Group, '^.*, ')) %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy, fill=Cell_Line)) +
+  geom_boxplot(aes(fill=Cell_Line, col=Cell_Line), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(fill=Cell_Line, col=Cell_Line), height=0, width=0.15) +
+  theme_bw() +
+  scale_fill_nejm() +
+  scale_color_nejm() +
+  facet_wrap(~Dose) +
+  ylim(0:1)
 
 #' Next, we assess performance relative to a randomly held out compounds. That 
 #' is, 4 compounds from each category randomly sampled to train models and the 
@@ -297,6 +418,47 @@ rbind(xplot.bag, xplot.cell) %>%
   theme(legend.position='none') +
   ylim(c(0, 1))
 
+# Accuracy by cell line, dose
+xplot.bag <- mutate(ypred.bag, Dose=str_remove_all(Compound_Dose, '^.*, ')) %>%
+  ungroup() %>%
+  group_by(Dose) %>%
+  summarize(Accuracy=mean(Ytrue == YpredBag)) %>%
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Cell_Line='Bagged') %>%
+  rename(Dose_Category=Dose) %>%
+  select(Cell_Line, Dose_Category, Accuracy)
+
+xplot.cell <- group_by(ypred, Cell_Line, Dose_Category) %>%
+  summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
+  mutate(Accuracy=round(Accuracy, 2))
+
+xplot.group <- rbind(xplot.bag, xplot.cell)
+
+xplot.group %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder_within(Cell_Line, Accuracy, Dose_Category), y=Accuracy)) +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
+  geom_text(aes(x=reorder_within(Cell_Line, Accuracy, Dose_Category), y=Accuracy + 0.02, label=Accuracy)) +
+  theme_bw() +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  facet_wrap(~Dose_Category, scales='free_x') +
+  scale_fill_nejm() +
+  ylim(c(0, 1.05))
+
+xplot.group %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder_within(Dose_Category, Accuracy, Cell_Line), y=Accuracy)) +
+  geom_bar(stat='identity', aes(fill=Cell_Line)) +
+  geom_text(aes(x=reorder_within(Dose_Category, Accuracy, Cell_Line), y=Accuracy + 0.02, label=Accuracy)) +
+  theme_bw() +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  facet_wrap(~Cell_Line, scales='free_x') +
+  scale_fill_nejm() +
+  ylim(c(0, 1.05))
+
+
 # Accuracy by compound category
 xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue))
@@ -335,3 +497,40 @@ superheat(
   bottom.label.text.angle=90
 )
 
+#' To assess model performance wrt sampling variability, we compute the average
+#' accuracy for each compound/dose/cell line category. 
+#+ pred_variaiblity_cpd, fig.height=8, fig.width=12
+xplot.cell <- mutate(ypred, Group=str_c(Compound_ID, ', ', Dose_Category)) %>%
+  group_by(Cell_Line, Group, Compound_Category) %>%
+  summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
+  mutate(Accuracy=round(Accuracy, 2))
+
+xplot.bag <- rename(ypred.bag, Group=Compound_Dose) %>%
+  mutate(Cell_Line='Bagged') %>%
+  select(Cell_Line, Group, Compound_Category, Accuracy)
+
+xplot.group <- rbind(xplot.cell, xplot.bag)
+
+xplot.group %>%
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy, fill=Cell_Line)) +
+  geom_boxplot(aes(fill=Cell_Line, col=Cell_Line), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(fill=Cell_Line, col=Cell_Line), height=0, width=0.15) +
+  theme_bw() +
+  scale_fill_nejm() +
+  scale_color_nejm() +
+  ylim(0:1)
+
+xplot.group %>%
+  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Dose=str_remove_all(Group, '^.*, ')) %>%
+  mutate(Cell_Line=factor(Cell_Line, levels=unique(xplot.group$Cell_Line))) %>%
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy, fill=Cell_Line)) +
+  geom_boxplot(aes(fill=Cell_Line, col=Cell_Line), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(fill=Cell_Line, col=Cell_Line), height=0, width=0.15) +
+  theme_bw() +
+  scale_fill_nejm() +
+  scale_color_nejm() +
+  facet_wrap(~Dose) +
+  ylim(0:1)

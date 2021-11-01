@@ -27,6 +27,8 @@ options(knitr.table.format = function() {
     "latex" else "pipe"
 })
 
+colnames(x) <- str_replace_all(colnames(x), 'MitoTracker', 'Mitotracker')
+
 #' # Overview
 #' In this notebook, we consider the utility of different marker sets for 
 #' compound target prediction. All analyses are restricted to A549 cell line.
@@ -48,10 +50,6 @@ options(knitr.table.format = function() {
 #' subsampled wells.
 #' 5. Any well (i.e. compound) that is further from the DMSO point cloud center 
 #' than the maximal DMSO distance is called as bioactive in the given subsample. 
-#'
-#' Repeating this process across many subsamples allows us to generate a 
-#' bioactivity p-value. Tablesbelow summarize bioactivity by plate, compound 
-#' category (in reference set), and cell line.
 #+ bioactivity
 ################################################################################
 # Bioactivity
@@ -75,6 +73,62 @@ xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   filter(pval == 0) %>%
   mutate(Compound_Dose=str_c(Compound_ID, ', ', Dose_Category))
 
+#' We select bioactive compounds using all features (from all channels). To 
+#' assess the degree to which different markers influednce bioactivity scores, 
+#' we repeat the same analysis as above individually fo each marker (and 
+#' morphology features)
+#+ bioactivity_channel
+markers <- c('HOECHST', 'Mitotracker', 'SYTO14', 'Alexa')
+markers.re <- str_c('(', str_c(markers, collapse='|'), ')')
+features.marker <- lapply(markers, function(m) str_subset(colnames(x), m))
+
+
+id.morphology <- !str_detect(colnames(x), markers.re)
+features.morphology <- colnames(x)[id.morphology] %>% str_subset('nonborder')
+
+features <- c(features.marker, list(features.morphology))
+names(features) <- c(markers, 'morphology')
+
+# Compute bioactivity scores for each well by plate/marker
+grid <- expand.grid(unique(x$PlateID), 1:length(features))
+xdist <- mclapply(1:nrow(grid), function(i) {
+  # Drop features 
+  feat.drop <- str_subset(colnames(x), '^nonborder') 
+  feat.drop <- setdiff(feat.drop, features[[grid$Var2[i]]])
+  xf <- select(x, -one_of(feat.drop))
+  
+  # Compute bioactivity
+  out <- filter(xf, PlateID == grid$Var1[i]) %>% dplyr::select(-matches('^PC'))
+  out <- bioactivity(out) %>% mutate(Markerset=names(features)[grid$Var2[i]])
+  return(out)
+}, mc.cores=n.core)
+
+xdist <- rbindlist(xdist)
+
+# Plot bioactivity by marker
+bioactive.marker.cat <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
+  group_by(Compound_Category, Markerset) %>% 
+  summarize(PropBioactive=mean(pval == 0), .groups='drop')
+
+bioactive.marker.cat %>%
+  ggplot(aes(x=reorder_within(Compound_Category, PropBioactive, Markerset), y=PropBioactive)) +
+  geom_bar(stat='identity', aes(fill=Compound_Category)) +
+  theme_bw() +
+  facet_wrap(~Markerset, scales='free_x') +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_jco() +
+  ggtitle('Bioactivity by category/marker')
+
+bioactive.marker.cat %>%
+  ggplot(aes(x=reorder_within(Markerset, PropBioactive, Compound_Category), y=PropBioactive)) +
+  geom_bar(stat='identity', aes(fill=Markerset)) +
+  theme_bw() +
+  facet_wrap(~Compound_Category, scales='free_x') +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_nejm() +
+  ggtitle('Bioactivity by category/cell line')
 #' # Modeling
 #' For each marker set, we train classifiers to predict compound category from
 #' phenotypic profiling features. Compounds/doses are filtered to include only 
@@ -115,6 +169,15 @@ markers <- c('HOECHST', 'Mitotracker', 'SYTO14', 'Alexa')
 markers.re <- str_c('(', str_c(markers, collapse='|'), ')')
 
 id.morphology <- !str_detect(colnames(xf), markers.re )
+features.morphology <- colnames(xf)[id.morphology] %>% str_subset('nonborder')
+
+write.csv(
+  file='~/Desktop/morphology_features.csv', 
+  features.morphology, 
+  quote=FALSE, 
+  row.names=FALSE
+)
+
 id.feat <- str_detect(colnames(xf), 'nonborder')
 id <- id.feat & id.morphology
 colnames(xf)[id] <- str_c(colnames(xf)[id], 'morphology')

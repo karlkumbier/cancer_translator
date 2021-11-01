@@ -224,19 +224,26 @@ expand_category <- function(x, category) {
   return(out)
 }
 
-bag_predictions <- function(ypred) {
+bag_predictions <- function(ypred, nbags=100) {
   # Average compound predictions across cell lines
   ypred <- mutate(ypred, Group=str_c(Compound_ID, ', ', Dose_Category))
   ypred.bag <- lapply(unique(ypred$Group), function(g) {
     out <- filter(ypred, Group == g) %>% 
-      select(Ypred, Compound_Category, Ytrue)
+      select(Ypred, Compound_Category, Ytrue, Cell_Line)
+    
+    sample_pred <- function(x) group_by(x, Cell_Line) %>% sample_n(1)
+    out.bag <- replicate(nbags, sample_pred(out), simplify=FALSE)
+    
+    ypred.bag <- sapply(out.bag, function(z) colMeans(do.call(rbind, z$Ypred)))
+    yacc.bag <- mean((apply(ypred.bag, MAR=2, which.max) - 1) == out$Ytrue[1])
     
     ypred <- colMeans(do.call(rbind, out$Ypred))
     out <- data.table(
       Compound_Dose=g, 
       YpredBag=(which.max(ypred) - 1),
       Compound_Category=out$Compound_Category[1],
-      Ytrue=out$Ytrue[1]
+      Ytrue=out$Ytrue[1],
+      Accuracy=yacc.bag
     )
     
     return(out)
@@ -244,6 +251,7 @@ bag_predictions <- function(ypred) {
   
   return(rbindlist(ypred.bag))
 }
+
 ################################################################################
 # Normalization functions
 ################################################################################

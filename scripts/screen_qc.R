@@ -1,7 +1,6 @@
 #+ setup, echo=FALSE, message=FALSE, warning=FALSE
 library(data.table)
 library(tidyverse)
-library(rprofiler)
 library(superheat)
 library(tidytext)
 library(parallel)
@@ -18,6 +17,7 @@ col.pal[6] <- '#FFFFFF'
 
 intensity.normalize <- TRUE
 n.core <- 6
+ks.thresh <- 0.3
 
 setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
@@ -25,18 +25,19 @@ data.dir <- 'data/screens/LH_CDC_1/'
 load(str_c(data.dir, 'ks_profiles.Rdata'))
 
 # TODO: check plate loading and clean plateID in data
-xks <- select(xks, -PlateID, -WellID)
-x <- cbind(xks, xmeta) %>%
+xks <- mutate(xks, ID=str_c(PlateID, '_', WellID)) %>%
+  select(-PlateID, -WellID) %>%
+  mutate_if(is.numeric, median_impute)
+
+x <- mutate(xmeta, ID=str_c(PlateID, '_', WellID)) %>%
   mutate(Control=Compound_ID == 'DMSO') %>%
   distinct() %>%
   filter(!is.na(PlateID)) %>%
   mutate(Col=as.numeric(sapply(str_split(WellID, '-'), tail, 1))) %>%
-  mutate_if(is.numeric, median_impute)
+  left_join(xks, by='ID')
 
 #' #QC
 #' The figures below report the distribution of cell counts by plate/cell line.
-#' We drop plate `2021018028` which appears to have a strange count distribution 
-#' relative to other A549 plates.
 #+ eda, fig.height=8, fig.width=15
 ################################################################################
 # Simple EDA - counts and intensity
@@ -58,15 +59,16 @@ filter(x, Control) %>%
   ggtitle('Cell counts, DMSO wells')
 
 filter(x, Control) %>%
-  group_by(Cell_Line, PlateID) %>%
-  summarize(NCells=mean(NCells)) %>%
-  ggplot(aes(x=reorder(Cell_Line, NCells), y=NCells)) +
+  ggplot(aes(x=reorder(PlateID, NCells), y=NCells)) +
   geom_boxplot(alpha=0.7, aes(fill=Cell_Line, col=Cell_Line)) +
   theme_bw() +
   scale_fill_nejm() +
-  scale_color_nejm() +  
+  scale_color_nejm() +
+  facet_wrap(~Cell_Line, scales='free') +
   theme(legend.position='none') +
-  ggtitle('Plate average cell counts, DMSO wells')
+  theme(axis.text.x=element_text(angle=90)) +
+  ggtitle('Cell counts, DMSO wells')
+
 
 #' # Well position effects
 #' To assess the effect of well position on feature distribution, we plot
@@ -74,8 +76,6 @@ filter(x, Control) %>%
 #' threshold KS statistics at +/- `r ks.thresh` for visualization.
 #+ superheat, fig.height=15, fig.width=21
 # Feature distribution plots
-ks.thresh <- 0.3
-
 xcontrol <- filter(x, Control)
 plate.id <- xcontrol$PlateID
 cell.line <- xcontrol$Cell_Line
@@ -179,6 +179,8 @@ data.frame(xcontrol) %>%
 ################################################################################
 # Full dataset PCA
 ################################################################################
+setwd('~/github/cancer_translator/')
+
 xfeat <- dplyr::select(x, matches('nonborder'))
 xpca <- prcomp(xfeat)
 x <- cbind(xpca$x, x)
