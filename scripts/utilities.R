@@ -72,14 +72,13 @@ fit_cell_line <- function(x,
   
   if (cell.line != 'Full') {
     xc <- filter(x, Cell_Line == cell.line) %>%
-      select(matches('(^nonborder|Compound_ID|Cell_Line|Compound_Category|Dose_Category)'))
+      select(matches('(^nonborder|Compound_ID|Cell_Line|Compound_Category|Dose_Category|Treatment)'))
     
     xx <- select(xc, matches('^nonborder'))
     yy <- as.factor(xc$Compound_Category)
   } else {
-    # TODO: random plate grouping
     xc <- x %>%
-      select(matches('(^nonborder|Compound_ID|Cell_Line|Compound_Category|Dose_Category)')) 
+      select(matches('(^nonborder|Compound_ID|Cell_Line|Compound_Category|Dose_Category|Treatment)')) 
     
     xdata <- expand_cell_data(xc, full.samples=full.samples, n.core=n.core)
     xx <- xdata$x
@@ -95,6 +94,21 @@ fit_cell_line <- function(x,
   
   # Set training set
   if (holdout == 'random') {
+    # Randomly hold-out treatment compound for testing
+    cpd.table <- select(xc, Compound_Category, Treatment) %>%
+      group_by(Compound_Category) %>%
+      summarize(Treatment=list(unique(Treatment)))
+    
+    trt.train <- lapply(1:reps, function(i) {
+      sapply(cpd.table$Treatment, function(z) {
+        sample(z, length(z) * prop)
+      })
+    })
+    
+    id.train <- lapply(trt.train, function(i) {
+      which(xc$Treatment %in% i)
+    })
+    
     # Randomly sample training set
     id.train <- createDataPartition(yy, times=reps, p=prop)
     
@@ -224,26 +238,23 @@ expand_category <- function(x, category) {
   return(out)
 }
 
-bag_predictions <- function(ypred, nbags=100) {
+bag_predictions <- function(ypred, cell.lines=NULL) {
+  
+  # Filter to selected cell lines
+  if (!is.null(cell.lines)) ypred <- filter(ypred, Cell_Line %in% cell.lines)
+  
   # Average compound predictions across cell lines
-  ypred <- mutate(ypred, Group=str_c(Compound_ID, ', ', Dose_Category))
-  ypred.bag <- lapply(unique(ypred$Group), function(g) {
-    out <- filter(ypred, Group == g) %>% 
+  ypred.bag <- lapply(unique(ypred$Treatment), function(g) {
+    out <- filter(ypred, Treatment == g) %>% 
       select(Ypred, Compound_Category, Ytrue, Cell_Line)
     
-    sample_pred <- function(x) group_by(x, Cell_Line) %>% sample_n(1)
-    out.bag <- replicate(nbags, sample_pred(out), simplify=FALSE)
-    
-    ypred.bag <- sapply(out.bag, function(z) colMeans(do.call(rbind, z$Ypred)))
-    yacc.bag <- mean((apply(ypred.bag, MAR=2, which.max) - 1) == out$Ytrue[1])
-    
-    ypred <- colMeans(do.call(rbind, out$Ypred))
+    ypred.bag <- colMeans(do.call(rbind, out$Ypred))
+
     out <- data.table(
-      Compound_Dose=g, 
-      YpredBag=(which.max(ypred) - 1),
+      Treatment=g, 
+      YpredBag=(which.max(ypred.bag) - 1),
       Compound_Category=out$Compound_Category[1],
-      Ytrue=out$Ytrue[1],
-      Accuracy=yacc.bag
+      Ytrue=out$Ytrue[1]
     )
     
     return(out)

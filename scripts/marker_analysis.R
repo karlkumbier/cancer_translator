@@ -73,15 +73,14 @@ xdist.select <- filter(xdist, Compound_Usage == 'reference_cpd') %>%
   filter(pval == 0) %>%
   mutate(Compound_Dose=str_c(Compound_ID, ', ', Dose_Category))
 
-#' We select bioactive compounds using all features (from all channels). To 
-#' assess the degree to which different markers influednce bioactivity scores, 
-#' we repeat the same analysis as above individually fo each marker (and 
-#' morphology features)
-#+ bioactivity_channel
+#' Above we select bioactive treatments (compound/dose pairs) using features 
+#' from all channels. To assess the degree to which different markers influednce 
+#' bioactivity scores, we repeat the same analysis as above individually for 
+#' each marker (and morphology features)
+#+ bioactivity_channel, fig.height=8, fig.width=12
 markers <- c('HOECHST', 'Mitotracker', 'SYTO14', 'Alexa')
 markers.re <- str_c('(', str_c(markers, collapse='|'), ')')
 features.marker <- lapply(markers, function(m) str_subset(colnames(x), m))
-
 
 id.morphology <- !str_detect(colnames(x), markers.re)
 features.morphology <- colnames(x)[id.morphology] %>% str_subset('nonborder')
@@ -129,6 +128,7 @@ bioactive.marker.cat %>%
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_nejm() +
   ggtitle('Bioactivity by category/cell line')
+
 #' # Modeling
 #' For each marker set, we train classifiers to predict compound category from
 #' phenotypic profiling features. Compounds/doses are filtered to include only 
