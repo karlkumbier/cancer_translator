@@ -107,7 +107,7 @@ ggplot(xgroup, aes(x=DistNorm, y=pval, col=Cell_Line)) +
 #' measured as the relative distance from DMSO, for each compound/dose 
 #' combination. Figures below show this distance for (i) all compounds (ii) 
 #' compound categories with more than 20 instances (not including "Other").
-#+ bioactivity_dist, fig.height=8, fig.width=15
+#+ bioactivity_dist, fig.height=12, fig.width=18
 # Format cell x compound bioactivity for visualization
 xplot <- matrix(xgroup$DistNorm, nrow=n.cell.line)
 rownames(xplot) <- unique(xgroup$Cell_Line)
@@ -151,7 +151,7 @@ superheat(
 #' set. For an individual cell line, we define treatments with p-value = 0 as 
 #' bioactive. For the "full" cell line set, we define any treatment with that is 
 #' bioactive in at least one cell line as bioactive (i.e. minimum p-value = 0).
-#+ bioactivity_treat, fig.height=12, fig.width=15, warning=FALSE
+#+ bioactivity_treat, fig.height=10, fig.width=18, warning=FALSE
 # Initialize cell line sets
 cell.lines <- unique(xdist$Cell_Line)
 
@@ -211,6 +211,7 @@ rbindlist(bioactive.cat) %>%
   facet_wrap(~Compound_Category, scales='free_x') +
   ggtitle('Bioactivity by cell line', 'reference compounds')
 
+#+ bioactivity_treat_heat, fig.height=12, fig.width=24, warning=FALSE
 ################################################################################
 # Bioactivity heatmap by cell line/category
 ################################################################################
@@ -246,7 +247,6 @@ superheat(
 )
 
 # Bioactivity table by cell line/category
-knitr::kable(bioactive.cat)
 setwd('~/github/cancer_translator/')
 write.csv(file='results/bioactivity_cell_category.csv', bioactive.cat, quote=FALSE)
 

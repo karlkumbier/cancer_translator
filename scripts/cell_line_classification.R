@@ -126,7 +126,7 @@ ypred <- rbindlist(ypred, use.names=TRUE) %>%
 #' Performance was comparable to bagging and training takes considerably longer
 #' for combinatorial cell line sets, so we do not report results for the full
 #' model here.
-#+ random_holdout_acc, fig.height=8, fig.width=15, message=FALSE
+#+ random_holdout_acc, fig.height=8, fig.width=18, message=FALSE
 # Accuracy by cell line
 n.cell.line <- length(cell.lines)
 cell.sets <- lapply(2:n.cell.line, function(k) {
@@ -159,12 +159,13 @@ xplot.group <- rbind(xplot.bag, xplot.cell) %>%
 xplot.group %>%
   ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
   geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(x=Cell_Line, y=Accuracy + 0.02, label=Accuracy)) +
+  geom_text(aes(label=Accuracy), size=2, nudge_y=0.02) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_gradientn(colors=ncell.pal[-1]) +
   ylim(c(0, 1.05))
 
+#+ random_holdout_acc_dose, fig.height=12, fig.width=18, message=FALSE
 # Accuracy by cell line, dose
 xplot.bag <- rbindlist(ypred.bag) %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
@@ -186,7 +187,7 @@ xplot.group <- rbind(xplot.bag, xplot.cell) %>%
 xplot.group %>%
   ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
   geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy + 0.02, label=Accuracy)) +
+  geom_text(aes(label=Accuracy), nudge_y=0.02, size=2) +
   theme_bw() +
   theme(legend.position='none') +
   theme(axis.text.x=element_text(angle=90)) +
@@ -195,6 +196,7 @@ xplot.group %>%
   ylim(c(0, 1.05)) +
   ggtitle('Classification accuracy by cell line, dose')
 
+#+ random_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
 # Accuracy by compound category
 xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop')
@@ -242,7 +244,7 @@ ypred.bag.random <- ypred.bag
 #' models here are evaluated on compounds they have never seen.
 #' 
 #' Plots below are the same as above but using hold-out compounds.
-#+ compound_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
+#+ compound_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
@@ -294,12 +296,13 @@ xplot.group <- rbind(xplot.bag, xplot.cell) %>%
 xplot.group %>%
   ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
   geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(x=Cell_Line, y=Accuracy + 0.02, label=Accuracy)) +
+  geom_text(aes(label=Accuracy), nudge_y=0.02, size=2) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_gradientn(colors=ncell.pal[-1]) +
   ylim(c(0, 1.05))
 
+#+ compound_holdout_dose, fig.height=12, fig.width=18, message=FALSE, echo=FALSE
 # Accuracy by cell line, dose
 xplot.bag <- rbindlist(ypred.bag) %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
@@ -321,7 +324,7 @@ xplot.group <- rbind(xplot.bag, xplot.cell) %>%
 xplot.group %>%
   ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
   geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy + 0.02, label=Accuracy)) +
+  geom_text(aes(label=Accuracy), nudge_y=0.02, size=2) +
   theme_bw() +
   theme(legend.position='none') +
   theme(axis.text.x=element_text(angle=90)) +
@@ -330,6 +333,7 @@ xplot.group %>%
   ylim(c(0, 1.05)) +
   ggtitle('Classification accuracy by cell line, dose')
 
+#+ compound_holdout_hm, fig.height=12, fig.width=24, message=FALSE, echo=FALSE
 # Accuracy by compound category
 xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop')
