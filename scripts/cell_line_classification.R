@@ -42,8 +42,8 @@ xcat.key <- select(x, Compound_ID, Compound_Category) %>%
   summarize(Compound_Category=select_category(Compound_Category))
 
 # Initialize color palettes
-heat.pal <- c('#FFFFFF', pal_material("light-blue")(10))
-ncell.pal <- pal_material("light-green")(10)
+heat.pal <- c('#FFFFFF', pal_material("light-green")(10))
+ncell.pal <- pal_material("purple")(10)
 compound.pal <- pal_jco()(10)
 cell.pal <- pal_nejm()(8)
 
@@ -184,17 +184,30 @@ xplot.cell <- group_by(ypred, Cell_Line, Dose_Category) %>%
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1)
 
-xplot.group %>%
-  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(label=Accuracy), nudge_y=0.02, size=2) +
-  theme_bw() +
-  theme(legend.position='none') +
-  theme(axis.text.x=element_text(angle=90)) +
-  facet_grid(Dose_Category~.) +
-  scale_fill_gradientn(colors=ncell.pal[-1]) +
-  ylim(c(0, 1.05)) +
-  ggtitle('Classification accuracy by cell line, dose')
+doses <- unique(xplot.group$Dose_Category)
+cell.lines <- unique(xplot.group$Cell_Line)
+xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(cell.lines))
+
+colnames(xplot.group.hm) <- doses
+rownames(xplot.group.hm) <- cell.lines
+
+# Initialize row attributes
+ncell <- select(xplot.group, Cell_Line, Ncells) %>% distinct()
+ncell.col <- ncell.pal[-1][floor(ncell$Ncells * 1.5)]
+
+superheat(
+  xplot.group.hm,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  membership.rows=ncell$Ncells,
+  left.label.col=ncell.col,
+  left.label='variable',
+  left.label.text.size=3,
+  heat.pal=heat.pal,
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label.text.angle=90,
+  title='Classificaiton accuracy by cell line, dose'
+)
 
 #+ random_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
 # Accuracy by compound category
@@ -231,13 +244,14 @@ superheat(
   left.label.text.size=3,
   heat.pal=heat.pal,
   heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90
+  bottom.label.text.angle=90,
+  title='Classificaiton accuracy by cell line, category'
 )
 
 ypred.random <- ypred
 ypred.bag.random <- ypred.bag
 
-#' #### Random holdout
+#' #### Compound holdout
 #' Next, we assess performance relative to a randomly held out compounds. That 
 #' is, 4 compounds from each category randomly sampled to train models and the 
 #' remaining compound from each category is used to assess accuracy. **Note:** 
@@ -304,6 +318,7 @@ xplot.group %>%
 
 #+ compound_holdout_dose, fig.height=12, fig.width=18, message=FALSE, echo=FALSE
 # Accuracy by cell line, dose
+# Accuracy by cell line, dose
 xplot.bag <- rbindlist(ypred.bag) %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
   ungroup() %>%
@@ -321,19 +336,32 @@ xplot.cell <- group_by(ypred, Cell_Line, Dose_Category) %>%
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1)
 
-xplot.group %>%
-  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(label=Accuracy), nudge_y=0.02, size=2) +
-  theme_bw() +
-  theme(legend.position='none') +
-  theme(axis.text.x=element_text(angle=90)) +
-  facet_grid(Dose_Category~.) +
-  scale_fill_gradientn(colors=ncell.pal[-1]) +
-  ylim(c(0, 1.05)) +
-  ggtitle('Classification accuracy by cell line, dose')
+doses <- unique(xplot.group$Dose_Category)
+cell.lines <- unique(xplot.group$Cell_Line)
+xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(cell.lines))
 
-#+ compound_holdout_hm, fig.height=12, fig.width=24, message=FALSE, echo=FALSE
+colnames(xplot.group.hm) <- doses
+rownames(xplot.group.hm) <- cell.lines
+
+# Initialize row attributes
+ncell <- select(xplot.group, Cell_Line, Ncells) %>% distinct()
+ncell.col <- ncell.pal[-1][floor(ncell$Ncells * 1.5)]
+
+superheat(
+  xplot.group.hm,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  membership.rows=ncell$Ncells,
+  left.label.col=ncell.col,
+  left.label='variable',
+  left.label.text.size=3,
+  heat.pal=heat.pal,
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label.text.angle=90,
+  title='Classificaiton accuracy by cell line, dose'
+)
+
+#+ cpd_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
 # Accuracy by compound category
 xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop')
@@ -368,5 +396,6 @@ superheat(
   left.label.text.size=3,
   heat.pal=heat.pal,
   heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90
+  bottom.label.text.angle=90,
+  title='Classificaiton accuracy by cell line, category'
 )

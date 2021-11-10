@@ -7,7 +7,7 @@ library(superheat)
 library(ggsci)
 
 intensity.normalize <- TRUE
-n.core <- 16
+n.core <- 6
 
 setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
@@ -33,8 +33,8 @@ options(knitr.table.format = function() {
 })
 
 # Initialize color palettes
-heat.pal <- c('#FFFFFF', pal_material("light-blue")(10))
-ncell.pal <- pal_material("light-green")(10)
+heat.pal <- c('#FFFFFF', pal_material("light-green")(10))
+ncell.pal <- pal_material("purple")(10)
 compound.pal <- pal_jco()(10)
 cell.pal <- pal_nejm()(8)
 
@@ -57,12 +57,13 @@ cell.pal <- pal_nejm()(8)
 #' 
 #' We then ask whether a given well compound/dose is further from the DMSO
 #' point cloud center than the maximal DMSO distance. Repeating this process
-#' across many subsamples allows us to generate a bioactivity p-value. Tables 
-#' below summarize bioactivity by plate, compound category (in reference set),
-#' and cell line.
+#' across many subsamples allows us to generate a bioactivity p-value. 
+#' 
+#' #' **Note:** Bioactivity scores are computed within plate.
 #+ bioactivity, fig.height=8, fig.width=14
+
 ################################################################################
-# Bioactivity
+# Compute bioactivity scores
 ################################################################################
 setwd('~/github/cancer_translator/')
 
@@ -79,6 +80,10 @@ xdist <- mclapply(unique(x$PlateID), function(p) {
 xdist <- rbindlist(xdist)
 save(file=output.file, xdist)
 
+#' The figure below reports normalized distance from DMSO against p-value for
+#' compound/dose pairs evaluated across all cell lines. Each point 
+#' corresponds to a single compound/dose.
+#+ dist_v_p, fig.height=8, fig.width=12
 # Group bioactivity scores by cell line/compound
 n.cell.line <- length(unique(x$Cell_Line))
 xgroup <- group_by(xdist, Cell_Line, Compound_ID, Dose_Category) %>% 
@@ -90,10 +95,6 @@ xgroup <- group_by(xdist, Cell_Line, Compound_ID, Dose_Category) %>%
   arrange(Compound_ID, Cell_Line) %>%
   left_join(xcat.key, by='Compound_ID')
 
-#' The figure below reports normalized distance from DMSO against p-value for
-#' compound/dose pairs evaluated across all cell lines. Each point 
-#' corresponds to a single compound/dose.
-#+ dist_v_p, fig.height=8, fig.width=12
 # Plot pvalue x dist
 ggplot(xgroup, aes(x=DistNorm, y=pval, col=Cell_Line)) +
   geom_jitter(alpha=0.5, width=0, height=0.025) +
@@ -189,28 +190,6 @@ rbindlist(bioactive.cat) %>%
   scale_fill_gradientn(colors=ncell.pal[-1]) +
   ggtitle('Proportion of bioactive calls by cell line set')
 
-rbindlist(bioactive.cat) %>%
-  ggplot(aes(x=reorder(Ncells, PropBioactive), y=PropBioactive)) +
-  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7, outlier.shape=NA) +
-  geom_jitter(aes(col=Ncells), height=0, width=0.2) +
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90)) +
-  scale_fill_gradientn(colors=ncell.pal[-1]) +
-  scale_color_gradientn(colors=ncell.pal[-1]) +
-  ggtitle('Bioactivity # cell lines')
-
-rbindlist(bioactive.cat) %>%
-  filter(Compound_Usage == 'reference_cpd') %>%
-  ggplot(aes(x=reorder(Ncells, PropBioactive), y=PropBioactive)) +
-  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7, outlier.shape=NA) +
-  geom_jitter(aes(col=Ncells), height=0, width=0.2) +
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90)) +
-  scale_fill_gradientn(colors=ncell.pal[-1]) +
-  scale_color_gradientn(colors=ncell.pal[-1]) +
-  facet_wrap(~Compound_Category, scales='free_x') +
-  ggtitle('Bioactivity by cell line', 'reference compounds')
-
 #+ bioactivity_treat_heat, fig.height=12, fig.width=24, warning=FALSE
 ################################################################################
 # Bioactivity heatmap by cell line/category
@@ -243,6 +222,7 @@ superheat(
   left.label.col=ncell.col[row.order],
   yr=avg.bioactive[row.order],
   yr.plot.type='bar',
+  yr.axis.name='Average proportion bioactive',
   heat.pal=heat.pal
 )
 

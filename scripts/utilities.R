@@ -14,16 +14,30 @@ fit_marker <- function(x,
                        prop=0.9,
                        reps=50) {
   
-  markers <- str_c(markers, collapse='|')
-  marker.re <- str_c('(', markers, ')')
+  markers.c <- str_c(markers, collapse='|')
+  marker.re <- str_c('(', markers.c, ')')
   
   xx <- select(x, matches('^nonborder')) %>% select(matches(marker.re))
   yy <- as.factor(x$Compound_Category)
   
   # Set training set
   if (holdout == 'random') {
-    # Randomly sample training set
-    id.train <- createDataPartition(yy, times=reps, p=prop)
+    # Randomly hold-out treatment compound for testing
+    cpd.table <- select(x, Compound_Category, Treatment) %>%
+      group_by(Compound_Category) %>%
+      summarize(Treatment=list(unique(Treatment)))
+    
+    trt.train <- lapply(1:reps, function(i) {
+      out <- sapply(cpd.table$Treatment, function(z) {
+        sample(z, length(z) * prop)
+      })
+      
+      return(unlist(out))
+    })
+    
+    id.train <- lapply(trt.train, function(i) {
+      which(x$Treatment %in% i)
+    })
     
   } else {
     # Randomly hold-out single compound for testing
@@ -55,7 +69,7 @@ fit_marker <- function(x,
   out <- rbindlist(out) %>%
     left_join(xx.select, by='ID') %>%
     select(-ID) %>%
-    mutate(Marker=markers)
+    mutate(Markerset=str_c(markers, collapse='_'))
   
   return(out)
 }
@@ -100,17 +114,16 @@ fit_cell_line <- function(x,
       summarize(Treatment=list(unique(Treatment)))
     
     trt.train <- lapply(1:reps, function(i) {
-      sapply(cpd.table$Treatment, function(z) {
+      out <- sapply(cpd.table$Treatment, function(z) {
         sample(z, length(z) * prop)
       })
+      
+      return(unlist(out))
     })
     
     id.train <- lapply(trt.train, function(i) {
       which(xc$Treatment %in% i)
     })
-    
-    # Randomly sample training set
-    id.train <- createDataPartition(yy, times=reps, p=prop)
     
   } else {
     # Randomly hold-out single compound for testing
