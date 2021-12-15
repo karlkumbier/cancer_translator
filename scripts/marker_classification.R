@@ -8,7 +8,8 @@ library(caret)
 library(superheat)
 library(ggsci)
 
-setwd('~/github/cancer_translator/')
+analysis.dir <- '~/github/cancer_translator/'
+setwd(analysis.dir)
 source('scripts/utilities.R')
 data.dir <- 'data/screens/LH_CDC_1/'
 
@@ -16,9 +17,10 @@ data.dir <- 'data/screens/LH_CDC_1/'
 # Initialize analysis parameters
 ################################################################################
 intensity.normalize <- TRUE
-n.core <- 6
+n.core <- 16
 cell.line <- 'A549'
 prop.train <- 0.8
+reps <- 50
 
 compound.set <- c(
   'HSP90',
@@ -34,7 +36,7 @@ load(fin)
 
 # Initialize output files
 output.dir <- 'results/marker/'
-dir.create(output.dir, showWarnings=TRUE)
+dir.create(output.dir, showWarnings=FALSE)
 bioactivity.file <- str_c(output.dir, 'bioactivity_', cell.line, '.Rdata') 
 output.file <- str_c(output.dir, 'classification_', cell.line, '.Rdata') 
 
@@ -86,21 +88,35 @@ names(groups) <- sapply(marker.comb, str_c, collapse='_')
 #' This notebook considers the problems of classifying compound category based 
 #' on a the cell painting markerset. In addition to models based on the full 
 #' markerset, we consider how prediction accuracy varies across subsets of 
-#' markers.
+#' markers, compounds doses, and compound categories.
+#' 
+#' # Key takeaways
+#' 
+#' 1. Marker-specific features profile marginal improvement in classification 
+#' accuracy relative to morphology features.
+#' 
+#' 2. Marker-specific features alone show a notable drop in classification 
+#' accuracy without morphology features, except when considering all markers 
+#' (i.e. marker-specific features from all 4 channels).
+#' 
+#' 3. Trends 1, 2 hold across compound categories and doses, though we observe 
+#' higher classification accuracy in certain categories (e.g. HDAC, mTOR).
 #'
 #' ## Bioactivity filtering
 #' Before training compound classifiers, we filter out treatments (i.e. 
 #' compounds/dose pairs) that cannot be distinguished from DMSO according to 
 #' bioactivity scores (see bioactivity analysis).
 #' 
-#' **Note:** bioactivity filtering is based on all markers.
+#' **Note:** bioactivity filtering is based on all markers. We set bioactivity 
+#' filter as p-value = 0, which results in a larger treatment set than distance 
+#' > 2 filtering (see bioactivity notebook).
 #' 
 #' ## Compound filtering
 #' The following analyses evaluate compound classification relative to the 
 #' reference compound categories used in ORACL.
-#+ load_bioactivity
+#+ load_bioactivity, message=FALSE, echo=FALSE, warning=FALSE
 # Load bioactivity table
-setwd('~/github/cancer_translator/')
+setwd(analysis.dir)
 load(bioactivity.file)
 
 # Filter to reference compound doses that are bioactive in the full markerset
@@ -122,115 +138,146 @@ compound.table <- group_by(xf, Compound_Category) %>%
 print(compound.table)
 
 #' # Modeling
-#' For each cell line, we train classifiers to predict compound category from
+#' For each marker, we train classifiers to predict compound category from
 #' phenotypic profiling features.
 #' 
 #' First, we assess performance relative to a random holdout set. `r prop.train`
 #' of wells are randomly sampled to train models and the remaining wells are 
 #' used to assess accuracy. **Note:** based on this formulation, a compound can 
 #' appear in both the training and test sets but as a different (well) replicate.
-#+ random_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
+#+ random_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE, warning=FALSE
 ################################################################################
 # Random holdout predictions
 ################################################################################
-# Fit models for each cell line
+# Initialize treatments used in training set
+cpd.table <- select(xf, Compound_Category, Treatment) %>%
+  group_by(Compound_Category) %>%
+  summarize(Treatment=list(unique(Treatment)))
+
+trt.train <- lapply(1:reps, function(i) {
+  sapply(cpd.table$Treatment, function(z) {
+    sample(z, length(z) * prop.train)
+  })
+})
+
+trt.train <- lapply(trt.train, unlist)
+
+# Fit models for each marker
 ypred <- mclapply(
   marker.comb, 
   fit_marker,
   x=xf,
   model=irf,
   model_predict=irf_predict,
-  prop=prop.train,
+  marker.features=features,
+  trt.train=trt.train,
   mc.cores=n.core
 )
 
 ypred <- rbindlist(ypred) %>%
   mutate(Treatment=str_c(Compound_ID, ', ', Dose_Category))
 
-#+ random_holdout_acc, fig.height=8, fig.width=18, message=FALSE
+#+ random_holdout_acc, fig.height=8, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 # Aggregate model predictions for visualization
-xplot.group <- group_by(ypred, Markerset) %>%
+xplot.group <- group_by(ypred, Markerset, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
-  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Accuracy=Accuracy) %>%
   mutate(Group=groups[Markerset])
 
+xtext.group <- group_by(xplot.group, Markerset, Group) %>%
+  summarize(Accuracy=round(mean(Accuracy), 3))
+
 xplot.group %>%
-  ggplot(aes(x=reorder(Markerset, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', aes(fill=Group)) +
-  geom_text(aes(label=Accuracy), size=2, nudge_y=0.02) +
+  ggplot(aes(x=reorder(Markerset, Accuracy), y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  geom_text(data=xtext.group, aes(y=1, label=Accuracy), size=2) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset') +
   ylim(c(0, 1.05))
 
-#+ random_holdout_acc_dose, fig.height=12, fig.width=18, message=FALSE
+group_by(xplot.group, Rep) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=reorder(Markerset, Accuracy), col=Group)) +
+  geom_boxplot(aes(fill=Group, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+group_by(xplot.group, Rep) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=reorder(Group, Accuracy), col=Group)) +
+  geom_boxplot(aes(fill=Group, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  theme(legend.position='none') +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset group', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+#+ random_holdout_acc_dose, fig.height=12, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 # Accuracy by cell line, dose
 xplot <- ypred %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
-  group_by(Markerset, Dose) %>%
+  group_by(Markerset, Dose, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
   mutate(Group=groups[Markerset]) %>%
   arrange(Dose, Markerset)
 
-# Accuracy by compound category heat map
-compounds <- unique(xplot$Compound_Category)
-markersets <- unique(xplot$Markerset)
-xplot.hm <- matrix(xplot$Accuracy, nrow=length(markersets))
+xplot %>%
+  ggplot(aes(x=Dose, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset group, dose') +
+  ylim(c(0, 1.05))
 
-colnames(xplot.hm) <- compounds
-rownames(xplot.hm) <- markersets
-
-# Initialize row attributes
-group <- groups[markersets]
-row.pal <- group.pal[as.factor(group)]
-
-superheat(
-  xplot.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=group,
-  left.label.col=row.pal,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90
-)
-
+group_by(xplot, Rep, Dose) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=Dose, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset group, dose', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
 #+ random_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
 # Accuracy by compound category
-xplot <- group_by(ypred, Markerset, Compound_Category) %>%
+xplot <- group_by(ypred, Markerset, Compound_Category, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
   mutate(Group=groups[Markerset]) %>%
   arrange(Compound_Category, Markerset)
 
-# Accuracy by compound category heat map
-compounds <- unique(xplot$Compound_Category)
-markersets <- unique(xplot$Markerset)
-xplot.hm <- matrix(xplot$Accuracy, nrow=length(markersets))
+xplot %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ylim(c(0, 1.05)) +
+  ggtitle('Accuracy over hold-out replicates by compound category')
 
-colnames(xplot.hm) <- compounds
-rownames(xplot.hm) <- markersets
-
-# Initialize row attributes
-group <- groups[markersets]
-row.pal <- group.pal[as.factor(group)]
-
-superheat(
-  xplot.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=group,
-  left.label.col=row.pal,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90
-)
-
-ypred.random <- ypred
+group_by(xplot, Rep, Compound_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by compound category', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
 #' #### Compound holdout
 #' Next, we assess performance relative to a randomly held out compounds. That 
@@ -239,10 +286,23 @@ ypred.random <- ypred
 #' models here are evaluated on compounds they have never seen.
 #' 
 #' Plots below are the same as above but using hold-out compounds.
-#+ compound_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
+#+ compound_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
+# Intialize compounds for training
+cpd.table <- select(xf, Compound_Category, Compound_ID) %>%
+  group_by(Compound_Category) %>%
+  summarize(Compound_ID=list(unique(Compound_ID)))
+
+cpd.train <- lapply(1:reps, function(i) {
+  sapply(cpd.table$Compound_ID, function(z) {
+    sample(z, length(z) - 1)
+  })
+})
+
+cpd.train <- lapply(cpd.train, unlist)
+
 # Fit models for each cell line
 ypred <- mclapply(
   marker.comb, 
@@ -250,95 +310,138 @@ ypred <- mclapply(
   x=xf,
   model=irf,
   model_predict=irf_predict,
-  prop=prop.train,
+  marker.features=features,
+  cpd.train=cpd.train,
   holdout='compound',
   mc.cores=n.core
 )
 
 ypred <- rbindlist(ypred) %>%
-  mutate(ypred, Treatment=str_c(Compound_ID, ', ', Dose_Category))
+  mutate(Treatment=str_c(Compound_ID, ', ', Dose_Category))
 
-#+ cpd_holdout_acc, fig.height=8, fig.width=18, message=FALSE
+#+ cpd_holdout_acc, fig.height=8, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 # Aggregate model predictions for visualization
-xplot.group <- group_by(ypred, Markerset) %>%
+xplot.group <- group_by(ypred, Markerset, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
-  mutate(Accuracy=round(Accuracy, 2)) %>%
+  mutate(Accuracy=Accuracy) %>%
   mutate(Group=groups[Markerset])
 
+xtext.group <- group_by(xplot.group, Markerset, Group) %>%
+  summarize(Accuracy=round(mean(Accuracy), 3))
+
 xplot.group %>%
-  ggplot(aes(x=reorder(Markerset, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', aes(fill=Group)) +
-  geom_text(aes(label=Accuracy), size=2, nudge_y=0.02) +
+  ggplot(aes(x=reorder(Markerset, Accuracy), y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  geom_text(data=xtext.group, aes(y=1, label=Accuracy), size=2) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset') +
   ylim(c(0, 1.05))
 
-#+ cpd_holdout_acc_dose, fig.height=12, fig.width=18, message=FALSE
-# Accuracy by cell line, dose
+group_by(xplot.group, Rep) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=reorder(Markerset, Accuracy), col=Group)) +
+  geom_boxplot(aes(fill=Group, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+group_by(xplot.group, Rep) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=reorder(Group, Accuracy), col=Group)) +
+  geom_boxplot(aes(fill=Group, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  theme(legend.position='none') +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset group', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+#+ cpd_holdout_acc_dose, fig.height=12, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 # Accuracy by cell line, dose
 xplot <- ypred %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
-  group_by(Markerset, Dose) %>%
+  group_by(Markerset, Dose, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
   mutate(Group=groups[Markerset]) %>%
   arrange(Dose, Markerset)
 
-# Accuracy by compound category heat map
-compounds <- unique(xplot$Compound_Category)
-markersets <- unique(xplot$Markerset)
-xplot.hm <- matrix(xplot$Accuracy, nrow=length(markersets))
+xplot %>%
+  ggplot(aes(x=Dose, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset group, dose') +
+  ylim(c(0, 1.05))
 
-colnames(xplot.hm) <- compounds
-rownames(xplot.hm) <- markersets
-
-# Initialize row attributes
-group <- groups[markersets]
-row.pal <- group.pal[as.factor(group)]
-
-superheat(
-  xplot.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=group,
-  left.label.col=row.pal,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90
-)
+group_by(xplot, Rep, Dose) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=Dose, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset group, dose', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
 #+ cpd_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
 # Accuracy by compound category
-xplot <- group_by(ypred, Markerset, Compound_Category) %>%
+xplot <- group_by(ypred, Markerset, Compound_Category, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
   mutate(Group=groups[Markerset]) %>%
   arrange(Compound_Category, Markerset)
 
-# Accuracy by compound category heat map
-compounds <- unique(xplot$Compound_Category)
-markersets <- unique(xplot$Markerset)
-xplot.hm <- matrix(xplot$Accuracy, nrow=length(markersets))
+xplot %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ylim(c(0, 1.05))
 
-colnames(xplot.hm) <- compounds
-rownames(xplot.hm) <- markersets
+group_by(xplot, Rep, Compound_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by markerset, dose', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
-# Initialize row attributes
-group <- groups[markersets]
-row.pal <- group.pal[as.factor(group)]
+xplot <- group_by(ypred, Markerset, Compound_Category, Rep) %>%
+  summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
+  mutate(Group=groups[Markerset]) %>%
+  arrange(Compound_Category, Markerset)
 
-superheat(
-  xplot.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=group,
-  left.label.col=row.pal,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90
-)
+xplot %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ylim(c(0, 1.05)) +
+  ggtitle('Accuracy over hold-out replicates by compound category')
 
-ypred.compound <- ypred
+group_by(xplot, Rep, Compound_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Markerset == 'morphology']) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy, col=Group)) +
+  geom_boxplot(aes(fill=Group), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=group.pal) +
+  scale_color_manual(values=group.pal) +
+  ggtitle('Accuracy over hold-out replicates by compound category', 'relative to morphology') +
+  geom_hline(yintercept=1, col='grey', linetype=2)

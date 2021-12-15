@@ -10,11 +10,15 @@ fit_marker <- function(x,
                        markers, 
                        model, 
                        model_predict, 
+                       marker.features,
+                       cpd.train=NULL,
+                       trt.train=NULL,
                        holdout='random', 
                        prop=0.9,
                        reps=50) {
   
-  markers.c <- str_c(markers, collapse='|')
+  features <- unlist(marker.features[markers])
+  markers.c <- str_c(features, collapse='|')
   marker.re <- str_c('(', markers.c, ')')
   
   xx <- select(x, matches('^nonborder')) %>% select(matches(marker.re))
@@ -22,32 +26,37 @@ fit_marker <- function(x,
   
   # Set training set
   if (holdout == 'random') {
-    # Randomly hold-out treatment compound for testing
-    cpd.table <- select(x, Compound_Category, Treatment) %>%
-      group_by(Compound_Category) %>%
-      summarize(Treatment=list(unique(Treatment)))
-    
-    trt.train <- lapply(1:reps, function(i) {
-      out <- sapply(cpd.table$Treatment, function(z) {
-        sample(z, length(z) * prop)
-      })
+    if (is.null(trt.train)) {
+      # Randomly hold-out treatments for testing
+      cpd.table <- select(x, Compound_Category, Treatment) %>%
+        group_by(Compound_Category) %>%
+        summarize(Treatment=list(unique(Treatment)))
       
-      return(unlist(out))
-    })
+      trt.train <- lapply(1:reps, function(i) {
+        out <- sapply(cpd.table$Treatment, function(z) {
+          sample(z, length(z) * prop)
+        })
+        
+        return(unlist(out))
+      })
+    }
     
+    # Intiailize training set indices
     id.train <- lapply(trt.train, function(i) {
       which(x$Treatment %in% i)
     })
     
   } else {
-    # Randomly hold-out single compound for testing
-    cpd.table <- select(x, Compound_Category, Compound_ID) %>%
-      group_by(Compound_Category) %>%
-      summarize(Compound_ID=list(unique(Compound_ID)))
-    
-    cpd.train <- lapply(1:reps, function(i) {
-      sapply(cpd.table$Compound_ID, sample, size=length(cpd.table$Compound_ID) - 1)
-    })
+    if (is.null(cpd.train)) {
+      # Randomly hold-out compounds for testing
+      cpd.table <- select(x, Compound_Category, Compound_ID) %>%
+        group_by(Compound_Category) %>%
+        summarize(Compound_ID=list(unique(Compound_ID)))
+      
+      cpd.train <- lapply(1:reps, function(i) {
+        sapply(cpd.table$Compound_ID, sample, size=length(cpd.table$Compound_ID) - 1)
+      })
+    }
     
     id.train <- lapply(cpd.train, function(i) {
       which(x$Compound_ID %in% i)
@@ -55,12 +64,11 @@ fit_marker <- function(x,
   }
   
   # Fit models to each training set
-  out <- lapply(id.train, fit_wrap, 
-                x=xx, 
-                y=yy, 
-                model=model, 
-                model_predict=model_predict
-  )
+  out <- lapply(1:length(id.train), function(i) {
+    out <- fit_wrap(xx, yy, id.train[[i]], model, model_predict)
+    out <- mutate(out, Rep=i)
+    return(out)
+  })
   
   # Aggregate model predictions
   xx.select <- select(x, !matches('^nonborder')) %>% 
@@ -78,6 +86,8 @@ fit_cell_line <- function(x,
                           cell.line, 
                           model, 
                           model_predict, 
+                          trt.train=NULL,
+                          cpd.train=NULL,
                           holdout='random', 
                           prop=0.9,
                           reps=50,
@@ -108,47 +118,52 @@ fit_cell_line <- function(x,
   
   # Set training set
   if (holdout == 'random') {
-    # Randomly hold-out treatment compound for testing
-    cpd.table <- select(xc, Compound_Category, Treatment) %>%
-      group_by(Compound_Category) %>%
-      summarize(Treatment=list(unique(Treatment)))
-    
-    trt.train <- lapply(1:reps, function(i) {
-      out <- sapply(cpd.table$Treatment, function(z) {
-        sample(z, length(z) * prop)
-      })
+    # Randomly hold out treatment compound for testing
+    if (is.null(trt.train)) {
+      cpd.table <- select(xc, Compound_Category, Treatment) %>%
+        group_by(Compound_Category) %>%
+        summarize(Treatment=list(unique(Treatment)))
       
-      return(unlist(out))
-    })
+      trt.train <- lapply(1:reps, function(i) {
+        out <- sapply(cpd.table$Treatment, function(z) {
+          sample(z, length(z) * prop)
+        })
+        
+        return(unlist(out))
+      })
+    }
     
+    # Initialize indices of training samples
     id.train <- lapply(trt.train, function(i) {
       which(xc$Treatment %in% i)
     })
     
   } else {
-    # Randomly hold-out single compound for testing
-    cpd.table <- select(xc, Compound_Category, Compound_ID) %>%
-      group_by(Compound_Category) %>%
-      summarize(Compound_ID=list(unique(Compound_ID)))
-    
-    cpd.train <- lapply(1:reps, function(i) {
-      sapply(cpd.table$Compound_ID, function(z) {
-        sample(z, length(z) - 1)
+    # Randomly hold out compound for testing
+    if (is.null(cpd.train)) {
+      cpd.table <- select(xc, Compound_Category, Compound_ID) %>%
+        group_by(Compound_Category) %>%
+        summarize(Compound_ID=list(unique(Compound_ID)))
+      
+      cpd.train <- lapply(1:reps, function(i) {
+        sapply(cpd.table$Compound_ID, function(z) {
+          sample(z, length(z) - 1)
+        })
       })
-    })
+    }
     
+    # Initialize indices of training samples
     id.train <- lapply(cpd.train, function(i) {
       which(xc$Compound_ID %in% i)
     })
   }
   
   # Fit models to each training set
-  out <- lapply(id.train, fit_wrap, 
-                x=xx, 
-                y=yy, 
-                model=model, 
-                model_predict=model_predict
-  )
+  out <- lapply(1:length(id.train), function(i) {
+    out <- fit_wrap(xx, yy, id.train[[i]], model, model_predict)
+    out <- mutate(out, Rep=i)
+    return(out)
+  })
                 
   # Aggregate model predictions
   xc.select <- select(xc, !matches('^nonborder')) %>% mutate(ID=1:n())
@@ -259,18 +274,23 @@ bag_predictions <- function(ypred, cell.lines=NULL) {
   # Average compound predictions across cell lines
   ypred.bag <- lapply(unique(ypred$Treatment), function(g) {
     out <- filter(ypred, Treatment == g) %>% 
-      select(Ypred, Compound_Category, Ytrue, Cell_Line)
+      select(Ypred, Compound_Category, Ytrue, Cell_Line, Rep)
     
-    ypred.bag <- colMeans(do.call(rbind, out$Ypred))
+    out <- lapply(unique(out$Rep), function(rep) {
+      
+      out.r <- filter(out, Rep == rep)
+      ypred.bag <- colMeans(do.call(rbind, out.r$Ypred))
 
-    out <- data.table(
-      Treatment=g, 
-      YpredBag=(which.max(ypred.bag) - 1),
-      Compound_Category=out$Compound_Category[1],
-      Ytrue=out$Ytrue[1]
-    )
+      out.r <- data.table(
+        Treatment=g, 
+        YpredBag=(which.max(ypred.bag) - 1),
+        Compound_Category=out$Compound_Category[1],
+        Ytrue=out$Ytrue[1],
+        Rep=rep
+      )
+    })
     
-    return(out)
+    return(rbindlist(out))
   })
   
   return(rbindlist(ypred.bag))
@@ -305,7 +325,7 @@ intensity_normalize_ <- function(col, y) {
 ################################################################################
 # Functions for evaluating bioactivity of compounds
 ################################################################################
-bioactivity <- function(x) {
+bioactivity <- function(x, n.core=1) {
   # Wrapper function to compute distance for each well to DMSO
 
   # Compute center of DMSO point cloud

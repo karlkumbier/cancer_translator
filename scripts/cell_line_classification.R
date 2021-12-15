@@ -11,6 +11,7 @@ library(ggsci)
 intensity.normalize <- TRUE
 n.core <- 16
 prop.train <- 0.8
+reps <- 100
 
 compound.set <- c(
   'HSP90',
@@ -21,12 +22,13 @@ compound.set <- c(
   'HDAC'
 )
 
-setwd('~/github/cancer_translator/')
+analysis.dir <- '~/github/cancer_translator/'
+setwd(analysis.dir)
 source('scripts/utilities.R')
 data.dir <- 'data/screens/LH_CDC_1/'
 
 output.dir <- 'results/cell_line/'
-dir.create(output.dir, showWarnings=TRUE)
+dir.create(output.dir, showWarnings=FALSE)
 bioactivity.file <- str_c(output.dir, 'bioactivity.Rdata')
 output.file <- str_c(output.dir, 'classification.Rdata') 
 
@@ -53,18 +55,34 @@ cell.pal <- pal_nejm()(8)
 #' addition to models based on individual cell lines, we consider whether 
 #' classification can be improved by aggregating information across cell lines.
 #'
+#' # Key takeaways
+#' 
+#' 1. Increasing from 1 to 2 cell lines improves compound category 
+#' classification accuracy for reference set compounds. Additional cell lines
+#' (beyond 2) do not improve accuracy. The best performing pairs include A549 
+#' with another cell line (e.g. A549, HEPG2).
+#' 
+#' 2. Classification accuracy is tied to dose, with lower doses being more 
+#' difficult to classify.
+#' 
+#' 3. The largest improvements in classification accuracy (from 1 to 2 cell 
+#' lines) are observed in HDAC compounds.
+#' 
+#' 
+#'
 #' ## Bioactivity filtering
 #' Before training compound classifiers, we filter out treatments (i.e. 
 #' compounds/dose pairs) that cannot be distinguished from DMSO according to 
 #' bioactivity scores (see bioactivity analysis).
 #' 
-#' **Note:** bioactivity filtering is based on all cell lines. I.e. all 
+#' **Note:** bioactivity filtering is based on all cell lines. All 
 #' treatments deemed bioactive wrt at least one cell line appear in our 
 #' classification analysis. This allows us to penalize cell line models (wrt 
 #' classification performances) that fail to detect bioactive treatments that 
-#' other cell line models capture.
+#' other cell line models capture. We set bioactivity filter as p-value = 0, 
+#' which results in a larger treatment set than distance > 2 filtering (see 
+#' bioactivity notebook).
 #' 
-#' ## Compound filtering
 #' The following analyses evaluate compound classification relative to the 
 #' reference compound categories used in ORACL.
 #+ load_bioactivity
@@ -83,7 +101,6 @@ xf <- mutate(x, Treatment=str_c(Compound_ID, ', ', Dose_Category)) %>%
   filter(Compound_Usage == 'reference_cpd') %>%
   filter(Compound_Category %in% compound.set)
   
-
 # Table of unique compounds by category
 compound.table <- group_by(xf, Compound_Category) %>%
   summarize(Ncpd=length(unique(Compound_ID)))
@@ -96,22 +113,38 @@ print(compound.table)
 #' 
 #' First, we assess performance relative to a random holdout set. `r prop.train`
 #' of wells are randomly sampled to train models and the remaining wells are 
-#' used to assess accuracy. **Note:** based on this formulation, a compound can 
-#' appear in both the training and test sets but as a different (well) replicate.
-#+ random_holdout, fig.height=8, fig.width=15, message=FALSE, echo=FALSE
+#' used to assess accuracy. 
+#' 
+#' **Note:** based on this formulation, a compound can appear in both the 
+#' training and test sets but as a different (well) replicate.
+#+ random_holdout, message=FALSE, echo=FALSE, warning=FALSE
 ################################################################################
 # Random holdout predictions
 ################################################################################
 # Fit models for each cell line
 cell.lines <- unique(xf$Cell_Line)
 
+# Initialize treatments used in training set
+cpd.table <- select(xf, Compound_Category, Treatment) %>%
+  group_by(Compound_Category) %>%
+  summarize(Treatment=list(unique(Treatment)))
+
+trt.train <- lapply(1:reps, function(i) {
+  sapply(cpd.table$Treatment, function(z) {
+    sample(z, length(z) * prop.train)
+  })
+})
+
+trt.train <- lapply(trt.train, unlist)
+
+# Fit models
 ypred <- mclapply(
   cell.lines, 
   fit_cell_line,
   x=xf,
   model=irf,
   model_predict=irf_predict,
-  prop=prop.train,
+  trt.train=trt.train,
   mc.cores=n.core
 )
 
@@ -122,13 +155,14 @@ ypred <- rbindlist(ypred, use.names=TRUE) %>%
 #' aggregate model that combines information/predictions across all cell 
 #' lines by bagging (i.e. average model predictions).
 #' 
-#' **Note:** We also considered a full model based on concatenated profiles. 
+#' **Note:** We previously considered a full model based on concatenated profiles. 
 #' Performance was comparable to bagging and training takes considerably longer
 #' for combinatorial cell line sets, so we do not report results for the full
 #' model here.
-#+ random_holdout_acc, fig.height=8, fig.width=18, message=FALSE
-# Accuracy by cell line
+#+ random_holdout_acc, fig.height=12, fig.width=24, message=FALSE, echo=FALSE, warning=FALSE
+# Initialize cell line sets
 n.cell.line <- length(cell.lines)
+
 cell.sets <- lapply(2:n.cell.line, function(k) {
   combn(cell.lines, k, simplify=FALSE)
 })
@@ -144,112 +178,149 @@ ypred.bag <- mclapply(cell.sets, function(s) {
 
 # Aggregate model predictions for visualization
 xplot.bag <- rbindlist(ypred.bag) %>%
-  group_by(Cell_Line) %>%
+  group_by(Cell_Line, Rep) %>%
   summarize(Accuracy=mean(Ytrue == YpredBag), .groups='drop') %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
-  select(Cell_Line, Accuracy)
+  select(Cell_Line, Rep, Accuracy)
 
-xplot.cell <- group_by(ypred, Cell_Line) %>%
+xplot.cell <- group_by(ypred, Cell_Line, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
   mutate(Accuracy=round(Accuracy, 2))
 
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1)
 
+xplot.text <- group_by(xplot.group, Cell_Line, Ncells) %>%
+  summarize(Accuracy=round(mean(Accuracy), 3))
+
+#' The figures below report the distribtuion of prediction accuracy across 
+#' hold-out replicates. I.e. each point represents a single replicate for which
+#' a randomly sampled collection of treatments are held-out for testing. Since
+#' we observe a high degree of variability across hold-out sets, we also report 
+#' accuracy relative to A549 classification for each hold-out set.
+#+ random_holdout_acc_plots, fig.height=8, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 xplot.group %>%
-  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(label=Accuracy), size=2, nudge_y=0.02) +
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), col=Ncells)) +
+  geom_boxplot(aes(fill=Ncells, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(y=Accuracy), alpha=0.9, width=0.15) +
+  geom_text(data=xplot.text, aes(y=1, label=Accuracy), size=2.25, nudge_y=0.02) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_gradientn(colors=ncell.pal[-1]) +
-  ylim(c(0, 1.05))
+  scale_color_gradientn(colors=ncell.pal[-1]) +
+  ylim(c(0, 1.05)) +
+  theme(legend.position='none') +
+  xlab('Number of cell lines used') +
+  ggtitle('Accuracy over hold-out replicates by cell line')
 
-#+ random_holdout_acc_dose, fig.height=12, fig.width=18, message=FALSE
+group_by(xplot.group, Rep) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), col=Ncells)) +
+  geom_boxplot(aes(fill=Ncells, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(y=Accuracy), alpha=0.9, width=0.15) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_gradientn(colors=ncell.pal[-1]) +
+  scale_color_gradientn(colors=ncell.pal[-1]) +
+  theme(legend.position='none') +
+  xlab('Number of cell lines used') +
+  ylab('Relative accuracy') +
+  ggtitle('Accuracy over hold-out replicates by cell line', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+group_by(xplot.group, Rep) %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  ggplot(aes(x=Ncells, col=Ncells)) +
+  geom_boxplot(aes(fill=Ncells, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  theme(legend.position='none') +
+  xlab('Number of cell lines used') +
+  ggtitle('Accuracy over hold-out replicates by cell line', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+#+ random_holdout_acc_dose, fig.height=8, fig.width=18, message=FALSE
 # Accuracy by cell line, dose
 xplot.bag <- rbindlist(ypred.bag) %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
   ungroup() %>%
-  group_by(Dose, Cell_Line) %>%
+  group_by(Dose, Cell_Line, Rep) %>%
   summarize(Accuracy=mean(Ytrue == YpredBag), .groups='drop') %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   rename(Dose_Category=Dose) %>%
-  select(Cell_Line, Dose_Category, Accuracy)
+  select(Cell_Line, Dose_Category, Rep, Accuracy)
 
-xplot.cell <- group_by(ypred, Cell_Line, Dose_Category) %>%
+xplot.cell <- group_by(ypred, Cell_Line, Dose_Category, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
-  select(Cell_Line, Dose_Category, Accuracy)
+  select(Cell_Line, Dose_Category, Rep, Accuracy)
 
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1)
 
-doses <- unique(xplot.group$Dose_Category)
-cell.lines <- unique(xplot.group$Cell_Line)
-xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(cell.lines))
+xplot.group %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Dose_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ylim(c(0, 1.05)) +
+  ggtitle('Accuracy by number cells, dose')
 
-colnames(xplot.group.hm) <- doses
-rownames(xplot.group.hm) <- cell.lines
+group_by(xplot.group, Rep, Dose_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Dose_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ggtitle('Accuracy by number cells, dose', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
-# Initialize row attributes
-ncell <- select(xplot.group, Cell_Line, Ncells) %>% distinct()
-ncell.col <- ncell.pal[-1][floor(ncell$Ncells * 1.5)]
 
-superheat(
-  xplot.group.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=ncell$Ncells,
-  left.label.col=ncell.col,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90,
-  title='Classificaiton accuracy by cell line, dose'
-)
-
-#+ random_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
+#+ random_holdout_acc_hm, fig.height=8, fig.width=24, message=FALSE
 # Accuracy by compound category
-xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
+xplot.cell <- group_by(ypred, Cell_Line, Compound_Category, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop')
 
 xplot.bag <- rbindlist(ypred.bag) %>%
-  group_by(Cell_Line, Compound_Category) %>%
+  group_by(Cell_Line, Compound_Category, Rep) %>%
   summarize(Accuracy=mean(YpredBag == Ytrue), .groups='drop')
 
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1) %>%
   arrange( Compound_Category, Cell_Line)
 
-# Accuracy by compound category heat map
-compounds <- unique(xplot.group$Compound_Category)
-cell.lines <- unique(xplot.group$Cell_Line)
-xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(cell.lines))
+xplot.group %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ylim(c(0, 1.05)) +
+  ggtitle('Accuracy by number cells, compound category')
 
-colnames(xplot.group.hm) <- compounds
-rownames(xplot.group.hm) <- cell.lines
+group_by(xplot.group, Rep, Compound_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ggtitle('Accuracy by number cells, compound category', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
-# Initialize row attributes
-ncell <- select(xplot.group, Cell_Line, Ncells) %>% distinct()
-ncell.col <- ncell.pal[-1][floor(ncell$Ncells * 1.5)]
-
-superheat(
-  xplot.group.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=ncell$Ncells,
-  left.label.col=ncell.col,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90,
-  title='Classificaiton accuracy by cell line, category'
-)
-
-ypred.random <- ypred
-ypred.bag.random <- ypred.bag
 
 #' #### Compound holdout
 #' Next, we assess performance relative to a randomly held out compounds. That 
@@ -258,18 +329,33 @@ ypred.bag.random <- ypred.bag
 #' models here are evaluated on compounds they have never seen.
 #' 
 #' Plots below are the same as above but using hold-out compounds.
-#+ compound_holdout, fig.height=8, fig.width=18, message=FALSE, echo=FALSE
+#+ compound_holdout, message=FALSE, echo=FALSE, warning=FALSE
 ################################################################################
 # Compound holdout predictions
 ################################################################################
-# Fit models for each cell line
+# Initialize cell lines for modeling
 cell.lines <- c(unique(xf$Cell_Line))
 
+# Intialize compounds for training
+cpd.table <- select(xf, Compound_Category, Compound_ID) %>%
+  group_by(Compound_Category) %>%
+  summarize(Compound_ID=list(unique(Compound_ID)))
+
+cpd.train <- lapply(1:reps, function(i) {
+  sapply(cpd.table$Compound_ID, function(z) {
+    sample(z, length(z) - 1)
+  })
+})
+
+cpd.train <- lapply(cpd.train, c)
+
+# Fit model
 ypred <- mclapply(
   cell.lines, 
   fit_cell_line,
   x=xf,
   model=irf,
+  cpd.train=cpd.train,
   model_predict=irf_predict,
   holdout='compound',
   mc.cores=n.core
@@ -278,8 +364,8 @@ ypred <- mclapply(
 ypred <- rbindlist(ypred, use.names=TRUE) %>%
   mutate(Treatment=str_c(Compound_ID, ', ', Dose_Category))
 
-
 n.cell.line <- length(cell.lines)
+
 cell.sets <- lapply(2:n.cell.line, function(k) {
   combn(cell.lines, k, simplify=FALSE)
 })
@@ -295,107 +381,146 @@ ypred.bag <- mclapply(cell.sets, function(s) {
 
 # Aggregate model predictions for visualization
 xplot.bag <- rbindlist(ypred.bag) %>%
-  group_by(Cell_Line) %>%
+  group_by(Cell_Line, Rep) %>%
   summarize(Accuracy=mean(Ytrue == YpredBag), .groups='drop') %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
-  select(Cell_Line, Accuracy)
+  select(Cell_Line, Rep, Accuracy)
 
-xplot.cell <- group_by(ypred, Cell_Line) %>%
+xplot.cell <- group_by(ypred, Cell_Line, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue)) %>%
   mutate(Accuracy=round(Accuracy, 2))
 
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1)
 
+xplot.text <- group_by(xplot.group, Cell_Line, Ncells) %>%
+  summarize(Accuracy=round(mean(Accuracy), 3))
+
+#' The figures below report the distribtuion of prediction accuracy across 
+#' hold-out replicates. I.e. each point represents a single replicate for which
+#' andomly sampled compounds are held-out for testing. Since
+#' we observe a high degree of variability across hold-out sets, we also report 
+#' accuracy relative to A549 classification for each hold-out set.
+#+ cpd_holdout_acc_plots, fig.height=12, fig.width=24, message=FALSE, echo=FALSE, warning=FALSE
 xplot.group %>%
-  ggplot(aes(x=reorder(Cell_Line, Accuracy), y=Accuracy)) +
-  geom_bar(stat='identity', aes(fill=Ncells)) +
-  geom_text(aes(label=Accuracy), nudge_y=0.02, size=2) +
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), col=Ncells)) +
+  geom_boxplot(aes(fill=Ncells, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(y=Accuracy), alpha=0.9, width=0.15) +
+  geom_text(data=xplot.text, aes(y=1, label=Accuracy), size=2.25, nudge_y=0.02) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
   scale_fill_gradientn(colors=ncell.pal[-1]) +
-  ylim(c(0, 1.05))
+  scale_color_gradientn(colors=ncell.pal[-1]) +
+  ylim(c(0, 1.05)) +
+  theme(legend.position='none') +
+  xlab('Number of cell lines used') +
+  ggtitle('Accuracy over hold-out replicates by cell line')
 
-#+ compound_holdout_dose, fig.height=12, fig.width=18, message=FALSE, echo=FALSE
-# Accuracy by cell line, dose
+group_by(xplot.group, Rep) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  ggplot(aes(x=reorder(Cell_Line, Accuracy), col=Ncells)) +
+  geom_boxplot(aes(fill=Ncells, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  geom_jitter(aes(y=Accuracy), alpha=0.9, width=0.15) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_gradientn(colors=ncell.pal[-1]) +
+  scale_color_gradientn(colors=ncell.pal[-1]) +
+  theme(legend.position='none') +
+  xlab('Number of cell lines used') +
+  ggtitle('Accuracy over hold-out replicates by cell line', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+
+group_by(xplot.group, Rep) %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  ggplot(aes(x=Ncells, col=Ncells)) +
+  geom_boxplot(aes(fill=Ncells, y=Accuracy), alpha=0.7, outlier.shape=NA) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  theme(legend.position='none') +
+  xlab('Number of cell lines used') +
+  ggtitle('Accuracy over hold-out replicates by cell line', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
+
+
+#+ cpd_holdout_acc_dose, fig.height=8, fig.width=18, message=FALSE, echo=FALSE, warning=FALSE
 # Accuracy by cell line, dose
 xplot.bag <- rbindlist(ypred.bag) %>%
   mutate(Dose=str_remove_all(Treatment, '^.*, ')) %>%
   ungroup() %>%
-  group_by(Dose, Cell_Line) %>%
+  group_by(Dose, Cell_Line, Rep) %>%
   summarize(Accuracy=mean(Ytrue == YpredBag), .groups='drop') %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
   rename(Dose_Category=Dose) %>%
-  select(Cell_Line, Dose_Category, Accuracy)
+  select(Cell_Line, Dose_Category, Rep, Accuracy)
 
-xplot.cell <- group_by(ypred, Cell_Line, Dose_Category) %>%
+xplot.cell <- group_by(ypred, Cell_Line, Dose_Category, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop') %>%
   mutate(Accuracy=round(Accuracy, 2)) %>%
-  select(Cell_Line, Dose_Category, Accuracy)
+  select(Cell_Line, Dose_Category, Rep, Accuracy)
 
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1)
 
-doses <- unique(xplot.group$Dose_Category)
-cell.lines <- unique(xplot.group$Cell_Line)
-xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(cell.lines))
+xplot.group %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Dose_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ylim(c(0, 1.05)) +
+  ggtitle('Accuracy by number cells, dose')
 
-colnames(xplot.group.hm) <- doses
-rownames(xplot.group.hm) <- cell.lines
+group_by(xplot.group, Rep, Dose_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Dose_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ggtitle('Accuracy by number cells, dose', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
 
-# Initialize row attributes
-ncell <- select(xplot.group, Cell_Line, Ncells) %>% distinct()
-ncell.col <- ncell.pal[-1][floor(ncell$Ncells * 1.5)]
 
-superheat(
-  xplot.group.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=ncell$Ncells,
-  left.label.col=ncell.col,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90,
-  title='Classificaiton accuracy by cell line, dose'
-)
-
-#+ cpd_holdout_acc_hm, fig.height=12, fig.width=24, message=FALSE
+#+ cpd_holdout_acc_hm, fig.height=8, fig.width=24, message=FALSE
 # Accuracy by compound category
-xplot.cell <- group_by(ypred, Cell_Line, Compound_Category) %>%
+xplot.cell <- group_by(ypred, Cell_Line, Compound_Category, Rep) %>%
   summarize(Accuracy=mean(YpredCl == Ytrue), .groups='drop')
 
 xplot.bag <- rbindlist(ypred.bag) %>%
-  group_by(Cell_Line, Compound_Category) %>%
+  group_by(Cell_Line, Compound_Category, Rep) %>%
   summarize(Accuracy=mean(YpredBag == Ytrue), .groups='drop')
 
 xplot.group <- rbind(xplot.bag, xplot.cell) %>%
   mutate(Ncells=str_count(Cell_Line, ',') + 1) %>%
   arrange( Compound_Category, Cell_Line)
 
-# Accuracy by compound category heat map
-compounds <- unique(xplot.group$Compound_Category)
-cell.lines <- unique(xplot.group$Cell_Line)
-xplot.group.hm <- matrix(xplot.group$Accuracy, nrow=length(cell.lines))
+xplot.group %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ylim(c(0, 1.05)) +
+  ggtitle('Accuracy by number cells, compound category')
 
-colnames(xplot.group.hm) <- compounds
-rownames(xplot.group.hm) <- cell.lines
-
-# Initialize row attributes
-ncell <- select(xplot.group, Cell_Line, Ncells) %>% distinct()
-ncell.col <- ncell.pal[-1][floor(ncell$Ncells * 1.5)]
-
-superheat(
-  xplot.group.hm,
-  pretty.order.rows=TRUE,
-  pretty.order.cols=TRUE,
-  membership.rows=ncell$Ncells,
-  left.label.col=ncell.col,
-  left.label='variable',
-  left.label.text.size=3,
-  heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1),
-  bottom.label.text.angle=90,
-  title='Classificaiton accuracy by cell line, category'
-)
+group_by(xplot.group, Rep, Compound_Category) %>%
+  mutate(Accuracy=Accuracy / Accuracy[Cell_Line == 'A549']) %>%
+  mutate(Ncells=as.factor(Ncells)) %>%
+  ggplot(aes(x=Compound_Category, y=Accuracy)) +
+  geom_boxplot(aes(fill=Ncells, col=Ncells), alpha=0.7) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(values=ncell.pal[-1]) +
+  scale_color_manual(values=ncell.pal[-1]) +
+  ggtitle('Accuracy by number cells, compound category', 'relative to A549') +
+  geom_hline(yintercept=1, col='grey', linetype=2)
