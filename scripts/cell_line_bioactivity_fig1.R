@@ -98,6 +98,8 @@ xtab <- rbindlist(xdist) %>%
   mutate(ID=sapply(ID, str_c, collapse=', ')) %>%
   arrange(desc(Dist))
 
+clean_str <- function(x) str_replace_all(x, '(\\\n|\\\r)', ' ')
+xtab <- mutate_if(xtab, is.character, clean_str)
 write.csv(file='~/Desktop/bioactivity.csv', xtab, quote=FALSE, row.names=FALSE)
 
 # Summarize bioactivity by compound category
@@ -106,6 +108,7 @@ xtab.cat <- filter(xtab, !is.na(Compound_Category)) %>%
   summarize(PropBioactive=mean(Bioactive), NumBioactive=sum(Bioactive), N=n()) %>%
   arrange(desc(PropBioactive))
 
+xtab.cat <- mutate_if(xtab.cat, is.character, clean_str)
 write.csv(file='~/Desktop/bioactivity_category.csv', xtab.cat, quote=FALSE, row.names=FALSE)
 
 # Summarize bioactivity by pathway
@@ -114,6 +117,7 @@ xtab.pw <- filter(xtab, !is.na(Pathway)) %>%
   summarize(PropBioactive=mean(Bioactive), NumBioactive=sum(Bioactive), N=n()) %>%
   arrange(desc(PropBioactive))
 
+xtab.pw <- mutate_if(xtab.pw, is.character, clean_str)
 write.csv(file='~/Desktop/bioactivity_pathway.csv', xtab.pw, quote=FALSE, row.names=FALSE)
 
 # Summarize bioactivity by target
@@ -122,6 +126,7 @@ xtab.target <- filter(xtab, !is.na(Target)) %>%
   summarize(PropBioactive=mean(Bioactive), NumBioactive=sum(Bioactive), N=n()) %>%
   arrange(desc(PropBioactive))
 
+xtab.target <- mutate_if(xtab.target, is.character, clean_str)
 write.csv(file='~/Desktop/bioactivity_target.csv', xtab.target, quote=FALSE, row.names=FALSE)
 
 
