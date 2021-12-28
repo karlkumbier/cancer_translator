@@ -7,17 +7,8 @@ library(superheat)
 library(ggsci)
 
 intensity.normalize <- TRUE
-n.core <- 16
+n.core <- 6
 min.cat <- 5
-
-reference.compounds <- c(
-  'HSP90',
-  'MT',
-  'mTOR',
-  'DNA',
-  'Proteasome',
-  'HDAC'
-)
 
 select_category <- function(x) {
   # Select majority value from vector of categories
@@ -33,32 +24,6 @@ count_categories <- function(x) {
   return(length(unique(x)))
 }
 
-silhouette_med <- function(x, labels) {
-  # Compute silhouette from class medioids
-  x <- as.matrix(x)
-  s <- numeric(length(labels))
-  
-  for (i in 1:length(labels)) {
-    idx <- setdiff(which(labels == labels[i]), i)
-    ai <- median(x[i, idx])
-    
-    bi <- sapply(setdiff(labels, labels[i]), function(l) {
-      return(median(x[i, labels == l]))
-    })
-    
-    bi <- min(bi)
-    
-    if (ai == bi) {
-      s[i] <- 0
-      next
-    }
-    
-    s[i] <- ifelse(ai > bi, bi / ai - 1, 1 - ai / bi)
-  }
-  
-  return(s)
-}
-
 # Initialize input/output directories and load KS profile data
 analysis.dir <- '~/github/cancer_translator/'
 setwd(analysis.dir)
@@ -72,43 +37,74 @@ output.file <- str_c(output.dir, 'bioactivity.Rdata')
 intensity.normalize <- TRUE
 load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
 
+# Initialize color palettes
+heat.pal <- c('#FFFFFF', pal_material("indigo")(10))
+heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
+
+#' # Compound targets
+#' Figures below summarize compound activity by target. Compounds with no
+#' reported target are dropped from figures.
+#+ targets, fig.heigh=8, fig.width=12
+# Load target data
+binarize <- function(z) as.numeric(z != 0)
+zero <- function(z) ifelse(is.na(z), 0, z)
+
+target.file <- 'data/Target_and_Activity/' %>%
+  str_c('Screened_Library_Activity_Combined_on_Compound.csv')
+
+x.target <- fread(target.file) %>%
+  mutate_if(is.numeric, zero) %>%
+  mutate_if(is.numeric, binarize)
+
+# Filter out compounds with no target
+xplot <- select(x.target, -Compound)
+xplot <- xplot[rowMeans(xplot == 0) != 1,]
+dim(xplot)
+
+# TODO: superheat with prevalent categories to ensure we are not looking @
+# small set of compounds.
+
+# Summarize # of compounds by target
+data.frame(N_Compound=colSums(xplot)) %>%
+  ggplot(aes(x=N_Compound)) +
+  geom_histogram() +
+  theme_bw() +
+  ggtitle('Distribution # compounds targeting protein')
+
+data.frame(N_Compound=colSums(xplot)) %>%
+  filter(N_Compound > 10) %>%
+  ggplot(aes(x=N_Compound)) +
+  geom_histogram() +
+  theme_bw() +
+  ggtitle('Distribution # compounds targeting protein', '> 10 compounds')
+
+# Summarize # compounds by identical target
+target.group <- apply(xplot, MAR=2, str_c, collapse='')
+data.frame(N_Compound=c(table(target.group))) %>%
+  ggplot(aes(x=N_Compound)) +
+  geom_histogram() +
+  theme_bw() +
+  ggtitle('Distribution # compounds by identical target set')
+
+
+superheat(
+  xplot,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  row.dendrogram=TRUE,
+  heat.pal=heat.pal,
+  heat.pal.values=seq(0, 1, by=0.1)
+)
+
+#' # Compound categories
+#' Below we summarize compound categories and initialize a category set with
+#' > `R min.cat` compounds to be visualized in our bioactivity analysis.
+#+ categories
 # Summarize compound category counts
 xcat.tab <- group_by(x, Compound_ID) %>%
   summarize(Compound_Category=list(Compound_Category)) %>%
   mutate(Count=sapply(Compound_Category, count_categories)) %>%
   mutate(Compound_Category=sapply(Compound_Category, select_category))
-
-mutate(xcat.tab, Count=as.factor(Count)) %>%
-  ggplot(aes(x=Count)) +
-  geom_bar() +
-  theme_bw() +
-  ggtitle('# compound category labels')
-
-filter(xcat.tab, Compound_Category %in% reference.compounds) %>%
-  mutate(Count=as.factor(Count)) %>%
-  ggplot(aes(x=Count)) +
-  geom_bar() +
-  theme_bw() +
-  ggtitle('# compound category labels', 'reference compounds')
-
-filter(xcat.tab, !is.na(Compound_Category)) %>%
-  group_by(Compound_Category) %>%
-  summarize(Count=n()) %>%
-  mutate(Reference=!Compound_Category %in% reference.compounds) %>%
-  ggplot(aes(x=reorder(Compound_Category, Count), y=Count, fill=Reference)) +
-  geom_bar(stat='identity') +
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90), legend.position='none') +
-  ggtitle('Compound category counts') +
-  scale_fill_hue(l=50)
-
-filter(xcat.tab, Compound_Category %in% reference.compounds) %>%
-  group_by(Compound_Category) %>%
-  summarize(Count=n()) %>%
-  ggplot(aes(x=reorder(Compound_Category, Count), y=Count)) +
-  geom_bar(stat='identity') +
-  theme_bw() +
-  ggtitle('Compound category counts', 'reference compounds')
 
 category.table <- table(xcat.tab$Compound_Category)
 cat.keep <- names(category.table[category.table >= min.cat])
@@ -121,15 +117,13 @@ x <- group_by(x, Compound_ID) %>%
   mutate(Pathway=select_category(Pathway)) %>%
   ungroup()
 
-xref <- filter(x, Compound_Category %in% reference.compounds) %>%
-  select(Compound_ID, Compound_Category) %>%
-  distinct()
+# TODO: Bioactivity
+# Iterate over targets, and compute prortion of bioactive calls within target
+# group. Plots for (i) all targets (ii) prevalent/diverse target subset.
+#
+# TODO: Classification/clustering
+# Sumnmarize # compounds by identical target groups. 
 
-table(xref$Compound_Category)
-
-# Initialize color palettes
-heat.pal <- c('#FFFFFF', pal_material("indigo")(10))
-heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
 
 #' # Overview
 #' This notebook considers the problems of identifying bioactive compounds 
