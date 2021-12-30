@@ -8,7 +8,6 @@ library(ggsci)
 
 intensity.normalize <- TRUE
 n.core <- 6
-min.cat <- 5
 
 select_category <- function(x) {
   # Select majority value from vector of categories
@@ -41,10 +40,16 @@ load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
 heat.pal <- c('#FFFFFF', pal_material("indigo")(10))
 heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
 
+#' # Notes/questions/concerns
+#' 
+#' 1. For compounds w/ single dose, why are dose categories not all "1"?
+#' 2. Why do some compounds not appear in target table — remapped names?
+#' 3. Should replicate compounds in target table be treated as same compound?
+#'
 #' # Compound targets
 #' Figures below summarize compound activity by target. Compounds with no
 #' reported target are dropped from figures.
-#+ targets, fig.heigh=8, fig.width=12
+#+ target_summaries, fig.height=8, fig.width=12
 # Load target data
 binarize <- function(z) as.numeric(z != 0)
 zero <- function(z) ifelse(is.na(z), 0, z)
@@ -56,39 +61,38 @@ x.target <- fread(target.file) %>%
   mutate_if(is.numeric, zero) %>%
   mutate_if(is.numeric, binarize)
 
-# Filter out compounds with no target
-xplot <- select(x.target, -Compound)
-xplot <- xplot[rowMeans(xplot == 0) != 1,]
-dim(xplot)
-
-# TODO: superheat with prevalent categories to ensure we are not looking @
-# small set of compounds.
+# Filter out compounds with no target data
+xplot.target <- select(x.target, -Compound)
+id.drop <- rowMeans(xplot.target == 0) == 1
+xplot.target <- xplot.target[!id.drop,]
+compounds <- x.target$Compound[!id.drop]
+print(dim(xplot.target))
 
 # Summarize # of compounds by target
-data.frame(N_Compound=colSums(xplot)) %>%
+data.frame(N_Compound=colSums(xplot.target)) %>%
   ggplot(aes(x=N_Compound)) +
   geom_histogram() +
   theme_bw() +
   ggtitle('Distribution # compounds targeting protein')
 
-data.frame(N_Compound=colSums(xplot)) %>%
-  filter(N_Compound > 10) %>%
-  ggplot(aes(x=N_Compound)) +
+data.frame(N_Target=rowSums(xplot.target)) %>%
+  ggplot(aes(x=N_Target)) +
   geom_histogram() +
   theme_bw() +
-  ggtitle('Distribution # compounds targeting protein', '> 10 compounds')
+  ggtitle('Distribution # protein targets per compound')
 
 # Summarize # compounds by identical target
-target.group <- apply(xplot, MAR=2, str_c, collapse='')
+target.group <- apply(xplot.target, MAR=2, str_c, collapse='')
 data.frame(N_Compound=c(table(target.group))) %>%
   ggplot(aes(x=N_Compound)) +
   geom_histogram() +
   theme_bw() +
   ggtitle('Distribution # compounds by identical target set')
 
-
+#+ target_heatmaps, fig.height=8, fig.width=12
+# Activity by target/compound pairs
 superheat(
-  xplot,
+  xplot.target,
   pretty.order.rows=TRUE,
   pretty.order.cols=TRUE,
   row.dendrogram=TRUE,
@@ -96,29 +100,23 @@ superheat(
   heat.pal.values=seq(0, 1, by=0.1)
 )
 
-#' # Compound categories
-#' Below we summarize compound categories and initialize a category set with
-#' > `R min.cat` compounds to be visualized in our bioactivity analysis.
-#+ categories
-# Summarize compound category counts
-xcat.tab <- group_by(x, Compound_ID) %>%
-  summarize(Compound_Category=list(Compound_Category)) %>%
-  mutate(Count=sapply(Compound_Category, count_categories)) %>%
-  mutate(Compound_Category=sapply(Compound_Category, select_category))
+# Activity by target/compound pairs, prevalent targets
+target.counts <- colSums(xplot.target)
+targets.select <- sort(target.counts) %>% tail(100) %>% names()
 
-category.table <- table(xcat.tab$Compound_Category)
-cat.keep <- names(category.table[category.table >= min.cat])
-cat.keep <- setdiff(cat.keep, 'Others')
-
-# Clean compound category/target/pathways
-x <- group_by(x, Compound_ID) %>%
-  mutate(Compound_Category=select_category(Compound_Category)) %>%
-  mutate(Target=select_category(Target)) %>%
-  mutate(Pathway=select_category(Pathway)) %>%
-  ungroup()
+superheat(
+  select(xplot.target, one_of(targets.select)),
+  pretty.order.cols=TRUE,
+  pretty.order.rows=TRUE,
+  row.dendrogram=TRUE,
+  heat.pal=heat.pal,
+  heat.pal.values=seq(0, 1, by=0.1),
+  bottom.label.text.angle=90,
+  bottom.label.text.size=3
+)
 
 # TODO: Bioactivity
-# Iterate over targets, and compute prortion of bioactive calls within target
+# Iterate over targets, and compute proportion of bioactive calls within target
 # group. Plots for (i) all targets (ii) prevalent/diverse target subset.
 #
 # TODO: Classification/clustering
@@ -158,8 +156,6 @@ x <- group_by(x, Compound_ID) %>%
 ################################################################################
 # Compute bioactivity scores
 ################################################################################
-setwd(analysis.dir)
-
 # Normalize data matrix
 l2norm <- function(z) z / sqrt(sum(z ^ 2))
 x <- mutate_if(x, is.numeric, l2norm)
@@ -173,29 +169,36 @@ xdist <- mclapply(unique(x$PlateID), function(p) {
 xtab <- rbindlist(xdist) %>%
   mutate(ID=str_c(PlateID, '_', WellID)) %>%
   group_by(Compound_ID) %>%
-  group_by(Cell_Line, Compound_ID, Dose, Dose_Category, Compound_Category, Target, Pathway) %>% #, SMILES) %>% 
-  summarize(Bioactive=(mean(pval) == 0), Dist=mean(DistNorm), ID=list(ID), .groups='drop') %>%
+  group_by(Cell_Line, Compound_ID, Dose, Dose_Category) %>%
+  summarize(Bioactive=(mean(pval) == 0), Dist=mean(DistNorm), ID=list(ID)) %>%
+  ungroup() %>%
   mutate(NID=sapply(ID, length)) %>%
   filter(NID < 10) %>%
   select(-NID) %>%
   mutate(ID=sapply(ID, str_c, collapse=', ')) %>%
   arrange(desc(Dist))
 
-#' Here we assess bioactivity calls by compound/cell line. We take the minimum
-#' p-value across all dose levels of a given treatment, effectively asking
-#' whether a cell line detects bioactivity at some dose level.
+#' Here we assess bioactivity calls by compound/cell line. For compounds treated 
+#' at multiple dose levels, we take the p-value corresponding to the maximum 
+#' dose.
+
+# TODO: check Dose_Category for single dose compounds.
 # Group bioactivity scores by treatment, cell line
 n.cell.line <- length(unique(x$Cell_Line))
 xgroup <- rbindlist(xdist) %>%
-  group_by(Cell_Line, Compound_ID, Dose_Category, Compound_Category) %>% 
+  group_by(Cell_Line, Compound_ID, Dose_Category) %>%
   summarize(DistNorm=mean(DistNorm), pval=mean(pval), .groups='drop') %>%
-  group_by(Cell_Line, Compound_ID, Compound_Category) %>%
-  summarize(DistNorm=max(DistNorm), pval=min(pval), .groups='drop') %>%
+  group_by(Cell_Line, Compound_ID) %>%
+  arrange(Dose_Category) %>%
+  slice_head(n=1) %>%
   group_by(Compound_ID) %>%
   mutate(Count=n()) %>%
   filter(Count == n.cell.line) %>%
   ungroup() %>%
   arrange(Compound_ID, Cell_Line)
+
+# TODO: check compounds that do not appear in target table
+print(mean(xgroup$Compound_ID %in% x.target$Compound))
 
 #' ### Fig 1. Bioactivity by cell line. 
 #' Bioactivity calls by compound), cell line. Compounds with p-value = 0 (for > 
@@ -209,13 +212,11 @@ xgroup <- rbindlist(xdist) %>%
 # Format cell x compound bioactivity for visualization
 xplot <- matrix(as.numeric(xgroup$pval == 0), nrow=n.cell.line)
 rownames(xplot) <- unique(xgroup$Cell_Line)
-colnames(xplot) <- unique(str_c(xgroup$Compound_ID))#, ', ', xgroup$Dose_Category))
-category <- matrix(xgroup$Compound_Category, nrow=n.cell.line)[1,]
+colnames(xplot) <- unique(str_c(xgroup$Compound_ID))
 
 # Filter to compounds with bioactive calls in > 0 cell lines
 id.drop <- colMeans(xplot == 0) == 1
 xplot <- xplot[,!id.drop]
-category <- category[!id.drop]
 
 # Initialize column ordering and bioactivity proportions
 prop.bioactive <- rowMeans(xplot)
@@ -242,39 +243,50 @@ superheat(
   title='Bioactivity by cell line, compound\nall compounds'
 )
 
-#' ### Fig 2. Bioactivity by cell line, compound category.
-#' Bioactivity calls by cell line, compound category. Treatments (compound dose 
+#' ### Fig 2. Bioactivity by cell line, target
+#' Bioactivity calls by cell line, target. Treatments (compound/dose 
 #' pairs) with p-value = 0 are defined as bioactive, while treatments with 
 #' p-value < 0 are defined as inactive. Top: bioactivity calls for each 
 #' treatment, bottom: proportion of bioactivity calls within each compound 
-#' category. Compound categories with fewer than `R min.cat` treatments are 
-#' dropped for visualization.
+#' category.
 #' 
 #' **Note:** treatment replicates are grouped and p-values averaged before 
 #' calling bioactivity. Thus, bioactive treatments correspond to those with 
 #' p-value = 0 across all replicates.
 #+ bioactivity_category, fig.height=12, fig.width=18, warning=FALSE
 # Plot bioactivity by cell line, compound category
-id.keep <- (category %in% cat.keep)
+target_bioactivity <- function(target, compounds, xtarget, xbioactive) {
+  # Compute proportion of compounds within target category called bioactive
+  
+  # Initialize compound set for select target
+  cpd.target <- unlist(select(xtarget, one_of(target)))
+  names(cpd.target) <- compounds
+  cpd.target <- cpd.target[cpd.target != 0] %>% names
+  
+  xbioactive.target <- filter(xbioactive, Compound_ID %in% cpd.target) %>%
+    group_by(Cell_Line) %>%
+    summarize(PropBioactive=mean(pval == 0))
+  
+  out <- xbioactive.target$PropBioactive
+  names(out) <- xbioactive.target$Cell_Line
+  return(out)
+}
 
-xplot.cat <- sapply(unique(category[id.keep]), function(ctg) {
-  rowMeans(xplot[,which(category == ctg)])
+targets <- colnames(xplot.target)
+xplot.bioactive.target <- sapply(targets, function(tgt) {
+  target_bioactivity(tgt, compounds, xplot.target, xgroup)
 })
 
-# reorder for visualization
-xplot.cat <- xplot.cat[,order(colMeans(xplot.cat))]
-xplot.cat[xplot.cat < 0.25] <- 0.25
+id.drop <- sapply(xplot.bioactive.target, length) != n.cell.line
+xplot.bioactive.target <- do.call(cbind, xplot.bioactive.target[!id.drop])
 
-avg.bioactive <- rowMeans(xplot.cat)
+# reorder for visualization
+avg.bioactive <- rowMeans(xplot.bioactive.target)
+col.order <- order(colMeans(xplot.bioactive.target))
 row.order <- order(avg.bioactive)
-col.order <- order(xplot.cat[tail(row.order, 1),])
 
 superheat(
-  xplot.cat[row.order, col.order],
-  yt=c(category.table[colnames(xplot.cat)][col.order]),
-  yt.plot.type='bar',
-  yt.axis.name='# of compounds',
-  yt.axis.name.size=12,
+  xplot.bioactive.target[row.order, col.order],
   yr=avg.bioactive[row.order],
   yr.plot.type='bar',
   yr.axis.name='Average proportion biactivity',
