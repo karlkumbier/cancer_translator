@@ -6,19 +6,6 @@ library(parallel)
 library(superheat)
 library(ggsci)
 
-intensity.normalize <- TRUE
-n.core <- 16
-min.cat <- 5
-
-reference.compounds <- c(
-  'HSP90',
-  'MT',
-  'mTOR',
-  'DNA',
-  'Proteasome',
-  'HDAC'
-)
-
 select_category <- function(x) {
   # Select majority value from vector of categories
   x <- na.omit(x)
@@ -33,32 +20,18 @@ count_categories <- function(x) {
   return(length(unique(x)))
 }
 
-silhouette_med <- function(x, labels) {
-  # Compute silhouette from class medioids
-  x <- as.matrix(x)
-  s <- numeric(length(labels))
-  
-  for (i in 1:length(labels)) {
-    idx <- setdiff(which(labels == labels[i]), i)
-    ai <- median(x[i, idx])
-    
-    bi <- sapply(setdiff(labels, labels[i]), function(l) {
-      return(median(x[i, labels == l]))
-    })
-    
-    bi <- min(bi)
-    
-    if (ai == bi) {
-      s[i] <- 0
-      next
-    }
-    
-    s[i] <- ifelse(ai > bi, bi / ai - 1, 1 - ai / bi)
-  }
-  
-  return(s)
-}
+# Initialize analysis parameters
+intensity.normalize <- TRUE
+n.core <- 16
+min.cat <- 5
 
+# Initialize color palettes
+heat.pal <- c('#FFFFFF', pal_material("indigo")(10))
+heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
+
+################################################################################
+# Load dataset
+################################################################################
 # Initialize input/output directories and load KS profile data
 analysis.dir <- '~/github/cancer_translator/'
 setwd(analysis.dir)
@@ -72,70 +45,83 @@ output.file <- str_c(output.dir, 'bioactivity.Rdata')
 intensity.normalize <- TRUE
 load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
 
+# Clean compound categories
+x <- group_by(x, Compound_ID) %>%
+  mutate(Compound_Category=select_category(Compound_Category)) %>%
+  ungroup()
+
+n.cell.line <- length(unique(x$Cell_Line))
+
+# Filter to compound/dose combinations evaluated in all cell lines
+x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
+  distinct() %>%
+  group_by(Compound_ID, Dose_Category, Compound_Usage) %>% 
+  count() %>%
+  filter(n == 6) %>%
+  mutate(ID=str_c(Compound_ID, Dose_Category, Compound_Usage))
+
+x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
+  filter(ID %in% x.treat$ID) %>%
+  filter(!is.na(Compound_Usage))
+
+xref <- filter(x, Compound_Usage == 'reference_cpd') %>%
+  select(Compound_ID, Compound_Category) %>%
+  distinct()
+
+################################################################################
+# Category analysis
+################################################################################
+#' Figures below summarize compound counts by category. We highlight reference 
+#' compounds in particular as they provide a baseline in our clustering analysis 
+#' below.
+#+ count_summaries, fig.height=8, fig.width=12
 # Summarize compound category counts
-xcat.tab <- group_by(x, Compound_ID) %>%
+xcat.tab <- group_by(x, Compound_ID, Compound_Usage) %>%
   summarize(Compound_Category=list(Compound_Category)) %>%
   mutate(Count=sapply(Compound_Category, count_categories)) %>%
   mutate(Compound_Category=sapply(Compound_Category, select_category))
 
-mutate(xcat.tab, Count=as.factor(Count)) %>%
+mutate(xcat.tab, Count=factor(Count, levels=0:2)) %>%
   ggplot(aes(x=Count)) +
   geom_bar() +
   theme_bw() +
   ggtitle('# compound category labels')
 
-filter(xcat.tab, Compound_Category %in% reference.compounds) %>%
-  mutate(Count=as.factor(Count)) %>%
-  ggplot(aes(x=Count)) +
-  geom_bar() +
-  theme_bw() +
-  ggtitle('# compound category labels', 'reference compounds')
-
 filter(xcat.tab, !is.na(Compound_Category)) %>%
-  group_by(Compound_Category) %>%
+  group_by(Compound_Category, Compound_Usage) %>%
   summarize(Count=n()) %>%
-  mutate(Reference=!Compound_Category %in% reference.compounds) %>%
+  mutate(Reference=Compound_Usage == 'reference_cpd') %>%
   ggplot(aes(x=reorder(Compound_Category, Count), y=Count, fill=Reference)) +
   geom_bar(stat='identity') +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90), legend.position='none') +
   ggtitle('Compound category counts') +
-  scale_fill_hue(l=50)
+  scale_fill_hue(l=50) +
+  scale_y_log10()
 
-filter(xcat.tab, Compound_Category %in% reference.compounds) %>%
-  group_by(Compound_Category) %>%
+filter(xcat.tab, Compound_Usage == 'reference_cpd') %>%
+  group_by(Compound_Category, Compound_Usage) %>%
   summarize(Count=n()) %>%
   ggplot(aes(x=reorder(Compound_Category, Count), y=Count)) +
   geom_bar(stat='identity') +
   theme_bw() +
   ggtitle('Compound category counts', 'reference compounds')
 
+xcat.tab <- select(xcat.tab, Compound_ID, Compound_Category) %>% distinct()
 category.table <- table(xcat.tab$Compound_Category)
 cat.keep <- names(category.table[category.table >= min.cat])
 cat.keep <- setdiff(cat.keep, 'Others')
-
-# Clean compound category/target/pathways
-x <- group_by(x, Compound_ID) %>%
-  mutate(Compound_Category=select_category(Compound_Category)) %>%
-  mutate(Target=select_category(Target)) %>%
-  mutate(Pathway=select_category(Pathway)) %>%
-  ungroup()
-
-xref <- filter(x, Compound_Category %in% reference.compounds) %>%
-  select(Compound_ID, Compound_Category) %>%
-  distinct()
-
-table(xref$Compound_Category)
-
-# Initialize color palettes
-heat.pal <- c('#FFFFFF', pal_material("indigo")(10))
-heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
 
 #' # Overview
 #' This notebook considers the problems of identifying bioactive compounds 
 #' based on a panel of 6 cell lines: OVCAR4, A549, DU145, ALS-WT, HEPG2, and 
 #' 786-0. In addition to individual cell lines, we consider whether bioactivity 
 #' calls can be improved by aggregating information across cell lines.
+#' 
+#' # Analysis updates
+#' 
+#' 1. Assessing bioactivity at the highest dose level rather than all dose levels.
+#' 2. Clustering analysis is performed for highest dose level rather than all dose levels.
 #' 
 #' # Bioactivity scoring
 #' We compute bioactivity scores as follows:
@@ -159,13 +145,16 @@ heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
 #' 
 #' **Note:** Features are $l2$ normalized prior to computing distances to 
 #' prevent scaling differences among features from skewing results.
+#' 
+#' **Note:** We assess bioactivity relative to the highest dose level of a given 
+#' compound. Some compounds appear under multiple usage categories (e.g. 
+#' reference_cpd & positive_ctrl_cpd). In such cases, we compute bioactivity 
+#' at the maximum dose over all use categories.
 #+ bioactivity, fig.height=8, fig.width=14, echo=FALSE
 
 ################################################################################
 # Compute bioactivity scores
 ################################################################################
-setwd(analysis.dir)
-
 # Normalize data matrix
 l2norm <- function(z) z / sqrt(sum(z ^ 2))
 x <- mutate_if(x, is.numeric, l2norm)
@@ -176,32 +165,14 @@ xdist <- mclapply(unique(x$PlateID), function(p) {
   return(bioactivity(out))
 }, mc.cores=n.core)
 
-xtab <- rbindlist(xdist) %>%
-  mutate(ID=str_c(PlateID, '_', WellID)) %>%
-  group_by(Compound_ID) %>%
-  group_by(Cell_Line, Compound_ID, Dose, Dose_Category, Compound_Category, Target, Pathway) %>% #, SMILES) %>% 
-  summarize(Bioactive=(mean(pval) == 0), Dist=mean(DistNorm), ID=list(ID), .groups='drop') %>%
-  mutate(NID=sapply(ID, length)) %>%
-  filter(NID < 10) %>%
-  select(-NID) %>%
-  mutate(ID=sapply(ID, str_c, collapse=', ')) %>%
-  arrange(desc(Dist))
-
-#' Here we assess bioactivity calls by compound/cell line. We take the minimum
-#' p-value across all dose levels of a given treatment, effectively asking
-#' whether a cell line detects bioactivity at some dose level.
 # Group bioactivity scores by treatment, cell line
-n.cell.line <- length(unique(x$Cell_Line))
 xgroup <- rbindlist(xdist) %>%
-  group_by(Cell_Line, Compound_ID, Dose_Category, Compound_Category) %>% 
-  summarize(DistNorm=mean(DistNorm), pval=mean(pval), .groups='drop') %>%
-  group_by(Cell_Line, Compound_ID, Compound_Category) %>%
-  summarize(DistNorm=max(DistNorm), pval=min(pval), .groups='drop') %>%
-  group_by(Compound_ID) %>%
-  mutate(Count=n()) %>%
-  filter(Count == n.cell.line) %>%
+  group_by(Compound_ID) %>% 
+  filter(Dose == max(as.numeric(Dose))) %>%
   ungroup() %>%
-  arrange(Compound_ID, Cell_Line)
+  group_by(Cell_Line, Compound_ID, Compound_Category) %>% 
+  summarize(DistNorm=mean(DistNorm), pval=mean(pval), .groups='drop') %>%
+  arrange(Compound_ID, Cell_Line) 
 
 #' ### Fig 1. Bioactivity by cell line. 
 #' Bioactivity calls by compound), cell line. Compounds with p-value = 0 (for > 
@@ -215,13 +186,8 @@ xgroup <- rbindlist(xdist) %>%
 # Format cell x compound bioactivity for visualization
 xplot <- matrix(as.numeric(xgroup$pval == 0), nrow=n.cell.line)
 rownames(xplot) <- unique(xgroup$Cell_Line)
-colnames(xplot) <- unique(str_c(xgroup$Compound_ID))#, ', ', xgroup$Dose_Category))
+colnames(xplot) <- unique(str_c(xgroup$Compound_ID))
 category <- matrix(xgroup$Compound_Category, nrow=n.cell.line)[1,]
-
-# Filter to compounds with bioactive calls in > 0 cell lines
-id.drop <- colMeans(xplot == 0) == 1
-xplot <- xplot[,!id.drop]
-category <- category[!id.drop]
 
 # Initialize column ordering and bioactivity proportions
 prop.bioactive <- rowMeans(xplot)
@@ -307,19 +273,6 @@ compound_similarity <- function(xdist, categories) {
   categories.num <- as.numeric(as.factor(categories))
   score <- cluster::silhouette(categories.num, xdist)
   
-  if (FALSE) {
-    xdist <- as.matrix(xdist)
-    score <- sapply(unique(categories), function(ctg) {
-      dist.within <- mean(xdist[categories == ctg, categories == ctg])
-      
-      dist.between <- sapply(setdiff(unique(categories), ctg), function(btw) {
-        mean(xdist[categories == ctg, categories != btw])
-      })
-      
-      return(dist.within / min(dist.between))
-    })
-  }
-  
   out <- score[,'sil_width']
   names(out) <- categories
   return(out)
@@ -329,12 +282,7 @@ compound_similarity <- function(xdist, categories) {
 # Compound similarity analysis
 ################################################################################
 # Initialize bioactive compound set
-compounds.select <- xtab %>%
-  mutate(Treat=str_c(Compound_ID, ', ', Dose_Category)) %>%
-  group_by(Treat) %>%
-  mutate(Count=n()) %>%
-  filter(Count == n.cell.line) %>%
-  filter(Bioactive)
+compounds.select <- filter(xgroup, pval == 0)
 
 # Initialize cluster score variables
 scores <- vector('list', length(unique(x$Cell_Line)))
@@ -347,11 +295,12 @@ for (cl in unique(x$Cell_Line)) {
   
   # Filter to bioactive compounds, select cell line
   xc <- filter(x, Cell_Line == cl) %>%
-    mutate(Treat=str_c(Compound_ID, ', ', Dose_Category)) %>%
-    filter(Treat %in% compounds.select$Treat) %>%
+    filter(Compound_ID %in% compounds.select$Compound_ID) %>%
     filter(Compound_Category %in% cat.keep) %>%
     select(-matches('^PC')) %>%
-    group_by(Compound_ID, Dose_Category, Compound_Category) %>%
+    group_by(Compound_ID) %>% 
+    filter(Dose == max(as.numeric(Dose))) %>%
+    group_by(Compound_ID, Compound_Category, Compound_Usage) %>%
     summarize_if(is.numeric, mean) %>%
     ungroup()
   
@@ -363,7 +312,6 @@ for (cl in unique(x$Cell_Line)) {
   colnames(xfeat) <- NULL
   categories <- xc$Compound_Category
   
-  # TODO: why some categories below selection threshold?
   scores[[cl]] <- compound_similarity(dist(xfeat), categories)
   
   ncat <- length(unique(categories))
@@ -383,8 +331,8 @@ for (cl in unique(x$Cell_Line)) {
   ##############################################################################
   # Reference compound set similarity
   ##############################################################################
-  xfeat.ref <- xfeat[categories %in% reference.compounds,]
-  categories.ref <- categories[categories %in% reference.compounds]
+  xfeat.ref <- xfeat[xc$Compound_ID %in% xref$Compound_ID,]
+  categories.ref <- categories[xc$Compound_ID %in% xref$Compound_ID]
   
   scores.ref[[cl]] <- compound_similarity(dist(xfeat.ref), categories.ref)
   
@@ -427,6 +375,8 @@ for (cl in unique(x$Cell_Line)) {
 ################################################################################
 # Visualize full compound set clustering
 ################################################################################
+category.table <- table(compounds.select$Compound_Category)
+
 # initialize data matrix for heatmap
 scores <- lapply(scores, as.matrix)
 scores <- reshape2::melt(scores) %>% 
@@ -483,9 +433,6 @@ pal.med <- mean(xplot <= 0)
 
 superheat(
   xplot,
-  yr=c(category.table)[rownames(xplot)],
-  yr.plot.type='bar',
-  yr.axis.name='# compounds',
   pretty.order.rows=TRUE,
   pretty.order.cols=TRUE,
   heat.pal=heat.pal.signed,
