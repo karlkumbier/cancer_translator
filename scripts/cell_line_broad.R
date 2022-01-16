@@ -315,10 +315,11 @@ data.frame(CellSet=names(opt.scores), PropBioactive=opt.scores) %>%
 
 #' # Clustering analysis
 #' The following case study consider the problem of clustering compounds based 
-#' on phenotypic profiles.
+#' on phenotypic profiles. We filter to categories with at least `R min.cat` 
+#' compounds and remove inactive compounds before clustering.
 #+ clustering
 ################################################################################
-# Clustering analysis
+# Initialize cluster analysis dataset
 ################################################################################
 # Initialize bioactive compound set
 compounds.select <- filter(xgroup, pval == 0)
@@ -339,11 +340,15 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
   summarize_if(is.numeric, mean) %>%
   ungroup()
 
-# Initialize analysis parameters
-kvals <- 2:30
+
+################################################################################
+# Initialize cluster analysis parameters
+################################################################################
+kvals <- 2:25
 min.p <- 2e-16
 cell.lines <- unique(x$Cell_Line)
-normalization <- function(z) l2norm(z)
+
+normalization <- function(z) rank(z)
 
 score_fun <- function(z) {
   z[z < min.p] <- min.p
@@ -372,7 +377,7 @@ for (cl in cell.lines) {
   
   # Cluster compounds for select cell line
   xc.cluster <- hclust(xc.dist)
-  clusters[[cl]] <- xc.cluster
+  clusters[[cl]] <- xc.feat # kmeans(xc.feat, centers=k.select, nstart=10)$cluster#xc.cluster
   
   # Compute clusters + silhouettes for range of k
   silhouettes <- sapply(kvals, function(k) {
@@ -388,7 +393,7 @@ for (cl in cell.lines) {
   enrichment.k <- lapply(kvals, function(k.select) {
     
     # Initialize clusters for select k  
-    clusters <- cutree(xc.cluster, k.select)
+    clusters <- kmeans(xc.feat, centers=k.select, nstart=10)$cluster#cutree(xc.cluster, k.select)
     
     # Compute enrichment of compound categories by cluster
     enrichment <- sapply(1:k.select, function(k) {
@@ -411,6 +416,9 @@ for (cl in cell.lines) {
   scores[[cl]] <- sapply(enrichment.k, score_fun)
 }
 
+################################################################################
+# Clustering summary plots
+################################################################################
 # Plot silhouette score v. enrichment
 p1 <- rbindlist(sil.plots) %>%
   ggplot(aes(x=K, y=Silhouette, color=Cell_Line)) +
@@ -439,14 +447,17 @@ p2 <- reshape2::melt(scores) %>%
 gridExtra::grid.arrange(p1, p2, ncol=1)
 
 # Plot cluster enrichment for select cluster size
-k <- 20
+k <- 15
+plot.thresh <- 1e-8
 
+# Initialize compound x cell lline enrichment matrix
 enrichments.k <- sapply(cell.lines, function(cl) {
   enrichment.cl <- enrichments[[cl]][[k - 1]]
   return(apply(enrichment.cl, MAR=1, min))
 })
 
-enrichments.k[enrichments.k < min.p] <- min.p
+enrichments.k[enrichments.k < plot.thresh] <- plot.thresh
+xplot <- -log(enrichments.k, base=10)
 
 # Initialize row counts
 compound.counts <- compound.table$Count
@@ -455,19 +466,20 @@ compound.counts <- compound.counts[unique(names(compound.counts))]
 
 # Initialize 
 superheat(
-  -log(enrichments.k, base=10),
+  xplot[,order(yt)],
   pretty.order.rows=TRUE,
   left.label.text.size=3,
   yr=compound.counts[rownames(enrichments.k)],
   yr.plot.type='bar',
   heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1)
+  heat.pal.values=seq(0, 1, by=0.1),
 )
 
-
-
-xplot <- enrichments[['ALS-WT']][[k - 1]]
-xplot[xplot < min.p] <- min.p
+# Plot cluster enrichment for select cell line
+cl <- 'A549'
+clusters.cl <- kmeans(clusters[[cl]], k, nstart=10)$cluster
+xplot <- enrichments[[cl]][[k - 1]]
+xplot[xplot < plot.thresh] <- plot.thresh
 
 superheat(
   -log(xplot, base=10),
