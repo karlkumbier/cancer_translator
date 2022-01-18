@@ -344,18 +344,19 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 ################################################################################
 # Initialize cluster analysis parameters
 ################################################################################
+# Initialize clustering parameters
 kvals <- 2:25
 min.p <- 2e-16
 cell.lines <- unique(x$Cell_Line)
 
+# Initialize normalization and scoring functions for clustering analysis
 normalization <- function(z) rank(z)
 
 score_fun <- function(z) {
-  z[z < min.p] <- min.p
-  logz <- -log(z, base=10)
- return(mean(apply(logz, MAR=1, max)))
+ return(mean(apply(z, MAR=1, min)))
 }
 
+# Initialize tracking for scoring/enrichment/silhouettes
 scores <- vector('list', length(cell.lines))
 names(scores) <- cell.lines
 
@@ -376,13 +377,13 @@ for (cl in cell.lines) {
   xc.dist <- dist(xc.feat)
   
   # Cluster compounds for select cell line
-  xc.cluster <- hclust(xc.dist)
-  clusters[[cl]] <- xc.feat # kmeans(xc.feat, centers=k.select, nstart=10)$cluster#xc.cluster
+  clusters[[cl]] <- lapply(kvals, function(k) {
+    kmeans(xc.feat, centers=k, nstart=10, iter.max=25)$cluster
+  })
   
   # Compute clusters + silhouettes for range of k
-  silhouettes <- sapply(kvals, function(k) {
-    clusters <- cutree(xc.cluster, k=k)
-    return(cluster::silhouette(clusters, xc.dist)[,'sil_width'])
+  silhouettes <- sapply(clusters[[cl]], function(cluster) {
+    return(cluster::silhouette(cluster, xc.dist)[,'sil_width'])
   })
  
   sil.plots[[cl]] <- data.frame(K=kvals) %>%
@@ -390,35 +391,34 @@ for (cl in cell.lines) {
     mutate(Cell_Line=cl)
   
   # Compute category enrichment at select resolution
-  enrichment.k <- lapply(kvals, function(k.select) {
+  enrichments[[cl]] <- lapply(clusters[[cl]], function(cluster) {
     
-    # Initialize clusters for select k  
-    clusters <- kmeans(xc.feat, centers=k.select, nstart=10)$cluster#cutree(xc.cluster, k.select)
+    #print(table(cluster))
     
     # Compute enrichment of compound categories by cluster
-    enrichment <- sapply(1:k.select, function(k) {
+    enrichment <- sapply(1:max(cluster), function(k) {
       hyper.test <- sapply(unique(xc$Compound_Category), function(cat) {
-        x <- sum(xc$Compound_Category == cat & clusters == k)
+        x <- sum(xc$Compound_Category == cat & cluster == k)
         m <- sum(xc$Compound_Category == cat)
         n <- sum(xc$Compound_Category != cat)
-        return(1 - phyper(x, m, n, sum(clusters == k)))
+        return(1 - phyper(x, m, n, sum(cluster == k)))
       })
       
       return(hyper.test)
     })
     
     # Normalize enrichment within clusters
-    enrichment <- apply(enrichment, MAR=2, function(z) z / max(z))
+    #enrichment <- apply(enrichment, MAR=2, function(z) z / max(z))
     return(data.frame(enrichment))
   })
   
-  enrichments[[cl]] <- enrichment.k
-  scores[[cl]] <- sapply(enrichment.k, score_fun)
+  scores[[cl]] <- sapply(enrichments[[cl]], score_fun)
 }
 
 ################################################################################
 # Clustering summary plots
 ################################################################################
+#+ cluster_summary_plots, fig.height=8, fig.width=12
 # Plot silhouette score v. enrichment
 p1 <- rbindlist(sil.plots) %>%
   ggplot(aes(x=K, y=Silhouette, color=Cell_Line)) +
@@ -446,9 +446,12 @@ p2 <- reshape2::melt(scores) %>%
 
 gridExtra::grid.arrange(p1, p2, ncol=1)
 
+################################################################################
 # Plot cluster enrichment for select cluster size
-k <- 15
-plot.thresh <- 1e-8
+################################################################################
+#+ cluster_heatmaps, fig.height=12, fig.width=20
+k <- 6
+plot.thresh <- 1e-5
 
 # Initialize compound x cell lline enrichment matrix
 enrichments.k <- sapply(cell.lines, function(cl) {
@@ -466,7 +469,7 @@ compound.counts <- compound.counts[unique(names(compound.counts))]
 
 # Initialize 
 superheat(
-  xplot[,order(yt)],
+  xplot,
   pretty.order.rows=TRUE,
   left.label.text.size=3,
   yr=compound.counts[rownames(enrichments.k)],
@@ -477,7 +480,7 @@ superheat(
 
 # Plot cluster enrichment for select cell line
 cl <- 'A549'
-clusters.cl <- kmeans(clusters[[cl]], k, nstart=10)$cluster
+clusters.cl <- clusters[[cl]][[k - 1]]
 xplot <- enrichments[[cl]][[k - 1]]
 xplot[xplot < plot.thresh] <- plot.thresh
 
@@ -488,192 +491,5 @@ superheat(
   yr=compound.counts[rownames(xplot)],
   yr.plot.type='bar',
   heat.pal=heat.pal,
-  heat.pal.values=seq(0, 1, by=0.1)
-)
-
-
-
-################################################################################
-#' # Compound predictions
-#' To assess the similarity between different compound classes, we compute 
-#' distances between compound phenotypic profiles and assess the similarity of 
-#' compounds within the same category relative to a k-nearest neighbor classifier. 
-#+ compound_prediction fig.height=12, fig.width=18, warning=FALSE
-compound_prediction <- function(xfeat, categories, k=5) {
-  # Compute within/between class similarity by compound category
-  
-  xdist.m <- as.matrix(dist(xfeat))
-  diag(xdist.m) <- Inf
-  
-  cat.pred <- apply(xdist.m, MAR=1, function(z) {
-    cat.table <- table(categories[order(z)[1:k]])
-    return(names(cat.table[cat.table == max(cat.table)]))
-  })
-  
-  out <- data.table(CategoryPred=cat.pred) %>%
-   mutate(Count=sapply(CategoryPred, length)) %>%
-   mutate(CategoryTrue=categories)
-  
-  return(out)
-}
-
-prediction_analysis <- function(x, min.cat=5, k=5) {
-  
-  # Filter categories for class balance
-  xcat <- select(x, Compound_Category, Compound_ID) %>% 
-    distinct() %>%
-    group_by(Compound_Category) %>%
-    sample_n(min.cat) %>%
-    ungroup()
-  
-  # Generate feature matrix and response vector
-  xc <- filter(x, Compound_ID %in% xcat$Compound_ID) 
-  xfeat <- select(xc, matches('^nonborder'))
-  categories <- xc$Compound_Category
-  
-  predict.cell <- lapply(unique(xc$Cell_Line), function(cl) {
-    id.cl <- xc$Cell_Line == cl
-    out <- compound_prediction(xfeat[id.cl,], categories[id.cl], k)
-    out$Cell_Line <- cl
-    out$Compound_ID <- xc$Compound_ID[id.cl]
-    return(out)
-  })
-  
-  return(rbindlist(predict.cell))
-}
-
-aggregate_prediction <- function(ypred, cell.line) {
-  # Aggregate predictions from select cell lines and compute accuracy
-  ypred.cl <- filter(ypred, Cell_Line %in% cell.line) %>%
-    group_by(Compound_ID) %>%
-    summarize(CategoryPred=list(unlist(CategoryPred)), CategoryTrue=unique(CategoryTrue)) %>%
-    mutate(CategoryPred=lapply(CategoryPred, select_max)) %>%
-    mutate(Count=sapply(CategoryPred, function(z) length(unique(z)))) %>%
-    mutate(Acc=mapply(function(yp, yt) yt %in% yp, CategoryPred, CategoryTrue))
-}
-
-select_max <- function(x) {
-  xtab <- table(x)
-  return(names(xtab[xtab == max(xtab)]))
-}
-
-cell_set_accuracy <- function(ypred, cell.lines, categories.select=NULL, confidence.thresh=2) {
-  ypred.agg <- aggregate_prediction(ypred, cell.lines)
-  if (!is.null(categories.select)) 
-    ypred.agg <- filter(ypred.agg, Compound_Category %in% categories.select)
-    
-  ypred.agg.highconf <- filter(ypred.agg, Count < confidence.thresh )
-  return(c(mean(ypred.agg$Acc), mean(ypred.agg.highconf$Acc)))
-}
-
-################################################################################
-# Compound  prediction analysis
-################################################################################
-set.seed(47)
-
-# Initialize bioactive compound set
-compounds.select <- filter(xgroup, pval == 0)
-
-# Get compound counts for bioactive set
-compound.table <- select(compounds.select, Compound_ID, Compound_Category) %>%
-  distinct() %>%
-  group_by(Compound_Category) %>%
-  filter(Compound_Category %in% cat.keep) %>%
-  mutate(Count=n()) %>%
-  filter(Count >= min.cat)
-
-x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
-  select(-matches('^PC')) %>%
-  group_by(Compound_ID, Cell_Line) %>% 
-  filter(Dose == max(as.numeric(Dose))) %>%
-  group_by(Compound_ID, Compound_Category, Cell_Line) %>%
-  summarize_if(is.numeric, mean) %>%
-  ungroup()
-
-
-ypred <- replicate(n.subsample, prediction_analysis(x), simplify=FALSE)
-
-#' ### Fig 3a Compound prediction generalist
-#+ prediction_generalist
-opt_classify_generalist <- function(ypred, cell.lines, k=1) {
-  # Evaluate cell line sets with optimal bioactivity across all compounds
-  cell.combs <- combn(cell.lines, k, simplify=FALSE)
-  accuracy <- lapply(cell.combs, cell_set_accuracy, ypred=ypred)
-  accuracy <- data.frame(do.call(rbind, accuracy))
-  accuracy$Cell_Set <- sapply(cell.combs, str_c, collapse=', ')
-  accuracy$k <- k
-  return(accuracy)
-}
-
-cell.lines <- unique(x$Cell_Line)
-ypred.opt <- lapply(1:n.cell.line, function(k) {
-  return(opt_classify_generalist(ypred[[1]], cell.lines, k))
-})
-
-ypred.opt <- rbindlist(ypred.opt) %>%
-  group_by(k) %>%
-  top_n(1, X1)
-
-################################################################################
-# Visualize full compound set clustering
-################################################################################
-# Generalist accuracy
-reshape2::melt(accuracy) %>%
-  dplyr::rename(Accuracy=value, CellLine=L1) %>%
-  ggplot(aes(x=reorder(CellLine, Accuracy, median), y=Accuracy)) +
-  geom_boxplot(aes(fill=CellLine, col=CellLine), alpha=0.5) +
-  scale_color_nejm() +
-  scale_fill_nejm() +
-  theme_bw() +
-  theme(legend.position='none') +
-  theme(text=element_text(size=24)) +
-  xlab(NULL)
-
-reshape2::melt(accuracy.high.conf) %>%
-  dplyr::rename(Accuracy=value, CellLine=L1) %>%
-  ggplot(aes(x=reorder(CellLine, Accuracy, median), y=Accuracy)) +
-  geom_boxplot(aes(fill=CellLine, col=CellLine), alpha=0.5) +
-  scale_color_nejm() +
-  scale_fill_nejm() +
-  theme_bw() +
-  theme(legend.position='none') +
-  theme(text=element_text(size=24)) +
-  xlab(NULL)
-
-# Specialist accuracy
-accuracy.category <- reshape2::melt(accuracy.category) %>%
-  dplyr::rename(Accuracy=value, CellLine=L1) %>%
-  group_by(CellLine, Category) %>%
-  summarize(Accuracy=mean(Accuracy))
-
-categories <- unique(accuracy.category$Category)
-cell.line <- unique(accuracy.category$CellLine)
-
-xplot <- matrix(accuracy.category$Accuracy, nrow=length(categories))
-rownames(xplot) <- categories
-colnames(xplot) <- cell.line
-
-# Filter out compound categories that cannot be classified
-id.drop <- apply(xplot, MAR=1, max) < 0.25
-xplot <- xplot[!id.drop,]
-
-# Initialize column ordering
-yt <- colMeans(xplot)
-category.table <- table(compound.table$Compound_Category)
-  
-superheat(
-  xplot[,order(yt)],
-  yr=c(category.table)[rownames(xplot)],
-  yr.plot.type='bar',
-  yr.axis.name='# compounds',
-  yr.axis.name.size=16,
-  yt=sort(yt),
-  yt.plot.type='bar',
-  yt.axis.name='Average accuracy\nselect categories',
-  yt.axis.name.size=16,
-  pretty.order.rows=TRUE,
-  heat.pal=c('#FFFFFF', heat.pal),
-  heat.pal.values=seq(0, 1, by=0.1),
-  left.label.text.size=3,
-  left.label.size=0.25
+  heat.pal.values=c(0, 0.25, seq(0.3, 1, by=0.05))
 )
