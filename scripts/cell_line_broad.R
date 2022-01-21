@@ -5,6 +5,8 @@ library(tidytext)
 library(parallel)
 library(superheat)
 library(ggsci)
+library(patchwork)
+library(hrbrthemes)
 
 select_category <- function(x) {
   # Select majority value from vector of categories
@@ -27,7 +29,7 @@ min.cat <- 5
 n.subsample <- 100
 
 # Initialize color palettes
-heat.pal <- c('#FFFFFF', pal_material("indigo")(10))
+heat.pal <- viridis::viridis(10)#c('#FFFFFF', pal_material("indigo")(10))
 heat.pal.signed <- RColorBrewer::brewer.pal(9, 'RdBu')
 
 ################################################################################
@@ -78,6 +80,11 @@ x.target <- 'data/Bioactivity_broad_label/' %>%
   dplyr::rename(Compound_Category=MOA_broad_institute) 
 
 x <- left_join(x, x.target, by='Compound_ID')
+
+
+xreference <- filter(x, Compound_Usage == 'reference_cpd') %>%
+  select(Compound_Usage, Compound_Category) %>%
+  filter(Compound_Category != '')
 
 ################################################################################
 # Category analysis
@@ -219,17 +226,26 @@ opt_bioactive_generalist <- function(x, k=1) {
 }
 
 x.generalist <- lapply(1:n.cell.line, opt_bioactive_generalist, x=xplot)
-opt.scores <- sapply(x.generalist, function(z) z$opt)
-data.frame(CellSet=names(opt.scores), PropBioactive=opt.scores) %>%
-  mutate(CellSet=factor(CellSet, levels=CellSet)) %>%
-  mutate(Label=round(PropBioactive, 3)) %>%
-  ggplot(aes(x=CellSet, y=PropBioactive)) +
-  geom_bar(stat='identity') +
-  geom_text(aes(label=Label), nudge_y=0.025) +
+
+xopt <- sapply(x.generalist, function(z) z$opt)
+xopt <- data.frame(CellSet=names(xopt), Score=xopt, K=1:n.cell.line) %>%
+  mutate(Score=round(Score, 3)) %>%
+  mutate(K=as.factor(K))
+
+xdist <- unlist(lapply(x.generalist, function(z) z$score))
+xdist <- data.frame(CellSet=names(xdist), Score=xdist) %>%
+  mutate(K=(str_count(CellSet, ',') + 1)) %>%
+  mutate(K=as.factor(K))
+
+# Plot optimal bioactivity scores
+ggplot(xdist, aes(x=K, y=Score)) +
+  geom_boxplot() +
+  geom_point(data=xopt) +
+  geom_text(data=xopt, aes(label=CellSet), nudge_y=0.025, size=3) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
-  ylim(c(0, 1)) +
-  ggtitle('Proportion bioactive compounds by optimal cell set')
+  ylab('Proportion bioactive') +
+  ggtitle('Proportion bioactive compounds in select categories by optimal cell set')
 
 #' ### Fig 2a. Bioactivity by cell line, compound category.
 #' Bioactivity calls by cell line, compound category. Treatments (compound dose 
@@ -296,20 +312,30 @@ opt_bioactive_specialist <- function(x, categories, categories.select, k=1) {
   return(list(opt=bioactive.score[which.max(bioactive.score)], score=bioactive.score))
 }
 
-categories.select <- c("VEGFR inhibitor", "EGFR inhibitor" )
+# Compute objective functions scores over cell line combinations
+categories.select <- unique(xreference$Compound_Category)
 x.specialist <- lapply(1:n.cell.line, function(k) {
   opt_bioactive_specialist(xplot, category, categories.select, k)
 })
 
-opt.scores <- sapply(x.specialist, function(z) z$opt)
-data.frame(CellSet=names(opt.scores), PropBioactive=opt.scores) %>%
-  mutate(CellSet=factor(CellSet, levels=CellSet)) %>%
-  mutate(Label=round(PropBioactive, 3)) %>%
-  ggplot(aes(x=CellSet, y=PropBioactive)) +
-  geom_bar(stat='identity') +
-  geom_text(aes(label=Label), nudge_y=0.025) +
+xopt <- sapply(x.specialist, function(z) z$opt)
+xopt <- data.frame(CellSet=names(xopt), Score=xopt, K=1:n.cell.line) %>%
+  mutate(Score=round(Score, 3)) %>%
+  mutate(K=as.factor(K))
+
+xdist <- unlist(lapply(x.specialist, function(z) z$score))
+xdist <- data.frame(CellSet=names(xdist), Score=xdist) %>%
+  mutate(K=(str_count(CellSet, ',') + 1)) %>%
+  mutate(K=as.factor(K))
+
+# Plot optimal bioactivity scores
+ggplot(xdist, aes(x=K, y=Score)) +
+  geom_boxplot() +
+  geom_point(data=xopt) +
+  geom_text(data=xopt, aes(label=CellSet), nudge_y=0.025, size=3) +
   theme_bw() +
   theme(axis.text.x=element_text(angle=90)) +
+  ylab('Proportion bioactive') +
   ggtitle('Proportion bioactive compounds in select categories by optimal cell set')
 
 
@@ -345,17 +371,320 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 # Initialize cluster analysis parameters
 ################################################################################
 # Initialize clustering parameters
-kvals <- 2:25
-min.p <- 2e-16
+kvals <- 2:50
+pct.var.thresh <- 0.9
+n.stab <- 10
 cell.lines <- unique(x$Cell_Line)
 
 # Initialize normalization and scoring functions for clustering analysis
-normalization <- function(z) rank(z)
-
-score_fun <- function(z) {
- return(mean(apply(z, MAR=1, min)))
+normalization <- function(z) {
+  return(rank(z) / length(z))
+  #z[z > quantile(z, 0.95)] <- quantile(z, 0.95)
+  #z[z < quantile(z, 0.05)] <- quantile(z, 0.05)
+  #return(z / sqrt(sum(z ^ 2)))
 }
 
+score_fun <- function(z) {
+ # Compute enrichment scores from cluster enrichment matrix
+ min.p <- apply(z, MAR=1, min)
+ min.k <- apply(z, MAR=1, which.min)
+ 
+ out <- data.frame(p=min.p, k=min.k) %>%
+   group_by(k) %>%
+   summarize(p=mean(p))
+ 
+ return(mean(out$p))
+}
+
+cluster_stability <- function(x, k) {
+  # Compute kmeans cluster stability
+  c1 <- kmeans(x, centers=k, nstart=3, iter.max=25)$cluster
+  c1 <- sapply(1:k, function(kk) as.numeric(c1 == kk))
+  
+  c2 <- kmeans(x, centers=k, nstart=3, iter.max=25)$cluster
+  c2 <- sapply(1:k, function(kk) as.numeric(c2 == kk))
+  
+  c.cor <- cor(c1, c2)
+  row.max <- apply(c.cor, MAR=2, max)
+  col.max <- apply(c.cor, MAR=2, max)
+  return((mean(row.max) + mean(col.max)) / 2)
+}
+
+#' ## Case study for A549
+#' 
+#' Analysis summary:
+#' - Features normalized (rank v. thresholded and l2 normalized)
+#' - PCA features computed (unnormalized, normalized)
+#' - Feature set = PCs that explain up to `r pct.var` variance
+#+ a549_analysis
+
+# Initialize feature set for select cell line
+xc <- filter(x, Cell_Line == 'A549')
+xc.feat <- select(xc, matches('^non')) %>% mutate_all(normalization)
+colnames(xc.feat) <- str_remove_all(colnames(xc.feat), '^nonborder\\.\\.\\.')
+
+# Compute principle component features for select cell line
+xc.pca <- prcomp(xc.feat)
+var.explained <- xc.pca$sdev ^ 2 / sum(xc.pca$sdev ^ 2)
+pct.var <- cumsum(var.explained)
+id.select <- pct.var < pct.var.thresh
+xc.feat.pca <- xc.pca$x[,id.select]
+
+#+ pca_heatmap, fig.height=8, fig.width=12
+superheat(
+  xc.feat,
+  row.dendrogram=TRUE,
+  pretty.order.rows=TRUE,
+  heat.pal=heat.pal,
+  bottom.label.text.angle=90,
+  bottom.label.text.size=3,
+  bottom.label.size=0.75,
+  heat.pal.values=seq(0, 1, by=0.1),
+  title='Raw features'
+)  
+
+superheat(
+  xc.feat.pca,
+  row.dendrogram=TRUE,
+  pretty.order.rows=TRUE,
+  yt=var.explained[id.select],
+  yt.plot.type='bar',
+  yt.axis.name='Variance',
+  heat.pal=heat.pal,
+  bottom.label.text.angle=90,
+  bottom.label.text.size=3,
+  bottom.label.size=0.75,
+  heat.pal.values=seq(0, 1, by=0.1),
+  title='PCA features'
+)  
+
+# Normalize PCA features
+xc.feat.pca.norm <- apply(xc.pca$x[,id.select], MAR=2, normalization)
+
+superheat(
+  xc.feat.pca.norm,
+  row.dendrogram=TRUE,
+  pretty.order.rows=TRUE,
+  yt=var.explained[id.select],
+  yt.plot.type='bar',
+  yt.axis.name='Variance',
+  heat.pal=heat.pal,
+  bottom.label.text.angle=90,
+  bottom.label.text.size=3,
+  bottom.label.size=0.75,
+  heat.pal.values=seq(0, 1, by=0.1),
+  title='PCA features, normalized'
+) 
+
+#' ### PC qualitative assessment
+#' Below we consider whether PC components that capture low variance in the 
+#' data are enriched for compound categories. In other words, whether these 
+#' components are biologicially relevant or noise.
+#+ pca_Assessment, fig.height=8, fig.width=12
+################################################################################
+# Top compound IDs by PC
+################################################################################
+pc.l2 <- apply(xc.feat.pca, MAR=2, function(z) sqrt(sum(z ^ 2)))
+pc.l2 <- round(pc.l2 / max(pc.l2), 3)
+
+data.frame(PC=names(pc.l2), l2=pc.l2) %>%
+  mutate(PC=factor(PC, levels=PC)) %>%
+  ggplot(aes(x=PC, y=l2)) +
+  geom_bar(stat='identity') +
+  theme_ipsum()
+  
+reshape2::melt(xc.feat.pca) %>%
+  group_by(Var2) %>%
+  top_n(10, value) %>%
+  mutate(Category=xc$Compound_Category[Var1]) %>%
+  mutate(ID=xc$Compound_ID[Var1]) %>%
+  ggplot(aes(x=reorder_within(ID, value, Var2), y=value, fill=Category)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  facet_wrap(~Var2, scales='free') +
+  theme_ipsum() +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_blank())
+
+reshape2::melt(xc.feat.pca) %>%
+  group_by(Var2) %>%
+  top_n(10, -value) %>%
+  mutate(Category=xc$Compound_Category[Var1]) %>%
+  mutate(ID=xc$Compound_ID[Var1]) %>%
+  ggplot(aes(x=reorder_within(ID, value, Var2), y=value, fill=Category)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  facet_wrap(~Var2, scales='free') +
+  theme_ipsum() +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_blank())
+
+
+################################################################################
+# Top compound categories PC distributions
+################################################################################
+xpca.cat <- reshape2::melt(xc.feat.pca) %>%
+  mutate(Category=xc$Compound_Category[Var1]) %>%
+  group_by(Var2, Category) %>%
+  summarize(MedCat=median(value), .groups='drop')
+
+xplot <- matrix(xpca.cat$MedCat, ncol=ncol(xc.feat.pca))
+rownames(xplot) <- unique(xpca.cat$Category)
+colnames(xplot) <- unique(xpca.cat$Var2)
+
+superheat(
+  apply(xplot, MAR=2, rank),
+  pretty.order.rows=TRUE,
+  row.dendrogram=TRUE,
+  left.label.text.size=2.5,
+  heat.pal=heat.pal,
+  heat.pal.values=seq(0, 1, by=0.1)
+)
+
+#' ### PCA clustering unnormalized
+#' Below we evaluate the strength of clusters (wrt silhouette score, enrichment)
+#' relative to unnormalized PCs
+#+ clustering_unnormalized, fig.height=8, fig.width=12
+# Cluster compounds for select cell line
+# Cluster compounds for select cell line
+cluster.analysis <- lapply(kvals, function(k) {
+  cluster <- kmeans(xc.feat.pca, centers=k, nstart=10, iter.max=25)$cluster
+  
+  # Cluster stability analysis
+  stability <- replicate(n.stab, cluster_stability(xc.feat.pca, k))
+  return(list(cluster=cluster, stability=stability))
+})
+
+clusters <- lapply(cluster.analysis, function(z) z$cluster)
+stability <- lapply(cluster.analysis, function(z) z$stability)
+
+# Compute clusters + silhouettes for range of k
+xc.dist <- dist(xc.feat.pca)
+
+silhouettes <- sapply(clusters, function(cluster) {
+  return(cluster::silhouette(cluster, xc.dist)[,'sil_width'])
+})
+
+# Compute category enrichment at select resolution
+enrichments <- lapply(clusters, function(cluster) {
+  
+  # Compute enrichment of compound categories by cluster
+  enrichment <- sapply(1:max(cluster), function(k) {
+    hyper.test <- sapply(unique(xc$Compound_Category), function(cat) {
+      x <- sum(xc$Compound_Category == cat & cluster == k)
+      m <- sum(xc$Compound_Category == cat)
+      n <- sum(xc$Compound_Category != cat)
+      return(1 - phyper(x, m, n, sum(cluster == k)))
+    })
+    
+    return(hyper.test)
+  })
+  
+  return(data.frame(enrichment))
+})
+
+xplot <- data.frame(K=kvals) %>%
+  mutate(Silhouette=colMeans(silhouettes)) %>%
+  mutate(Enrich=-log(sapply(enrichments, score_fun), base=10)) %>%
+  mutate(Cell_Line='A549')
+
+p1 <- ggplot(xplot, aes(x=K, y=Silhouette)) +
+  geom_line(size=1.1, col=pal_jco()(3)[1]) +
+  theme_ipsum() +
+  theme(legend.position='none')
+
+p2 <- ggplot(xplot, aes(x=K, y=Enrich)) +
+  geom_line(size=1.1, col=pal_jco()(3)[2]) +
+  theme_ipsum() +
+  theme(legend.position='none')
+
+p3 <- reshape2::melt(stability) %>%
+  rename(K=L1, Stability=value) %>%
+  mutate(K=kvals[K]) %>%
+  group_by(K) %>%
+  summarize(Stability=mean(Stability)) %>%
+  ggplot(aes(x=K, y=Stability)) +
+  geom_line(size=1.1, col=pal_jco()(3)[3]) +
+  theme_ipsum() +
+  theme(legend.position='none')
+
+gridExtra::grid.arrange(p1, p2, p3, ncol=1)
+
+#' ### PCA clustering normalized
+#' Below we evaluate the strength of clusters (wrt silhouette score, enrichment)
+#' relative to normalized PCs
+#+ clustering_normalized, fig.height=8, fig.width=12
+
+
+# Cluster compounds for select cell line
+cluster.analysis <- lapply(kvals, function(k) {
+  cluster <- kmeans(xc.feat.pca.norm, centers=k, nstart=10, iter.max=25)$cluster
+  
+  # Cluster stability analysis
+  stability <- replicate(25, cluster_stability(xc.feat.pca.norm, k))
+  return(list(cluster=cluster, stability=stability))
+})
+
+clusters <- lapply(cluster.analysis, function(z) z$cluster)
+stability <- lapply(cluster.analysis, function(z) z$stability)
+
+# Compute clusters + silhouettes for range of k
+xc.dist <- dist(xc.feat.pca.norm)
+
+silhouettes <- sapply(clusters, function(cluster) {
+  return(cluster::silhouette(cluster, xc.dist)[,'sil_width'])
+})
+
+# Compute category enrichment at select resolution
+enrichments <- lapply(clusters, function(cluster) {
+  
+  # Compute enrichment of compound categories by cluster
+  enrichment <- sapply(1:max(cluster), function(k) {
+    hyper.test <- sapply(unique(xc$Compound_Category), function(cat) {
+      x <- sum(xc$Compound_Category == cat & cluster == k)
+      m <- sum(xc$Compound_Category == cat)
+      n <- sum(xc$Compound_Category != cat)
+      return(1 - phyper(x, m, n, sum(cluster == k)))
+    })
+    
+    return(hyper.test)
+  })
+  
+  return(data.frame(enrichment))
+})
+
+xplot <- data.frame(K=kvals) %>%
+  mutate(Silhouette=colMeans(silhouettes)) %>%
+  mutate(Enrich=-log(sapply(enrichments, score_fun), base=10)) %>%
+  mutate(Cell_Line='A549')
+
+# Initialize visualization parameters
+p1 <- ggplot(xplot, aes(x=K, y=Silhouette)) +
+  geom_line(size=1.1, col=pal_jco()(3)[1]) +
+  theme_ipsum() +
+  theme(legend.position='none')
+
+p2 <- ggplot(xplot, aes(x=K, y=Enrich)) +
+  geom_line(size=1.1, col=pal_jco()(3)[2]) +
+  theme_ipsum() +
+  theme(legend.position='none')
+
+p3 <- reshape2::melt(stability) %>%
+  rename(K=L1, Stability=value) %>%
+  mutate(K=kvals[K]) %>%
+  group_by(K) %>%
+  summarize(Stability=mean(Stability)) %>%
+  ggplot(aes(x=K, y=Stability)) +
+  geom_line(size=1.1, col=pal_jco()(3)[3]) +
+  theme_ipsum() +
+  theme(legend.position='none')
+
+gridExtra::grid.arrange(p1, p2, p3, ncol=1)
+
+
+
+#' ## Full cell line analysis
+#+ cell_line_analysis
 # Initialize tracking for scoring/enrichment/silhouettes
 scores <- vector('list', length(cell.lines))
 names(scores) <- cell.lines
@@ -371,17 +700,36 @@ names(enrichments) <- cell.lines
 
 for (cl in cell.lines) {
   
-  # Compute pairwise distances for select cell line
+  # Initialize feature set for select cell line
   xc <- filter(x, Cell_Line == cl)
   xc.feat <- select(xc, matches('^non')) %>% mutate_all(normalization)
-  xc.dist <- dist(xc.feat)
+  colnames(xc.feat) <- str_remove_all(colnames(xc.feat), '^nonborder\\.\\.\\.')
+  
+  # Compute principle component features for select cell line
+  xc.pca <- prcomp(xc.feat)
+  pct.var <- cumsum(xc.pca$sdev ^ 2) / sum(xc.pca$sdev ^ 2)
+  id.select <- pct.var < pct.var.thresh
+  xc.feat.pca <- xc.pca$x[,id.select]
   
   # Cluster compounds for select cell line
   clusters[[cl]] <- lapply(kvals, function(k) {
-    kmeans(xc.feat, centers=k, nstart=10, iter.max=25)$cluster
+    kmeans(xc.feat.pca, centers=k, nstart=10, iter.max=25)$cluster
   })
   
+  superheat(
+    xc.feat.pca,
+    pretty.order.rows=TRUE,
+    membership.rows=clusters[[cl]][[4]],
+    heat.pal=heat.pal,
+    bottom.label.text.angle=90,
+    bottom.label.text.size=3,
+    bottom.label.size=0.75,
+    heat.pal.values=seq(0, 1, by=0.1)
+  )  
+  
   # Compute clusters + silhouettes for range of k
+  xc.dist <- dist(xc.feat.pca)
+  
   silhouettes <- sapply(clusters[[cl]], function(cluster) {
     return(cluster::silhouette(cluster, xc.dist)[,'sil_width'])
   })
@@ -392,8 +740,6 @@ for (cl in cell.lines) {
   
   # Compute category enrichment at select resolution
   enrichments[[cl]] <- lapply(clusters[[cl]], function(cluster) {
-    
-    #print(table(cluster))
     
     # Compute enrichment of compound categories by cluster
     enrichment <- sapply(1:max(cluster), function(k) {
@@ -406,9 +752,7 @@ for (cl in cell.lines) {
       
       return(hyper.test)
     })
-    
-    # Normalize enrichment within clusters
-    #enrichment <- apply(enrichment, MAR=2, function(z) z / max(z))
+  
     return(data.frame(enrichment))
   })
   
@@ -450,7 +794,8 @@ gridExtra::grid.arrange(p1, p2, ncol=1)
 # Plot cluster enrichment for select cluster size
 ################################################################################
 #+ cluster_heatmaps, fig.height=12, fig.width=20
-k <- 6
+k <- 7
+cl <- 'A549'
 plot.thresh <- 1e-5
 
 # Initialize compound x cell lline enrichment matrix
@@ -467,29 +812,60 @@ compound.counts <- compound.table$Count
 names(compound.counts) <- compound.table$Compound_Category
 compound.counts <- compound.counts[unique(names(compound.counts))]
 
+# Filter out compounds with no enrichment
+id.drop <- apply(xplot, MAR=1, function(z) max(z) < 3)
+
+# Initialize row ordering
+col.means <- colMeans(xplot[!id.drop,])
+max.col <- which.max(colMeans(xplot[!id.drop,]))
+col.order <- order(col.means)
+row.order <- order(xplot[!id.drop, max.col])
+
 # Initialize 
 superheat(
-  xplot,
-  pretty.order.rows=TRUE,
+  xplot[!id.drop,][row.order, col.order],
   left.label.text.size=3,
-  yr=compound.counts[rownames(enrichments.k)],
+  left.label.size=0.5,
+  yr=compound.counts[rownames(enrichments.k)][!id.drop][row.order],
   yr.plot.type='bar',
+  yr.axis.name='# compounds', 
   heat.pal=heat.pal,
   heat.pal.values=seq(0, 1, by=0.1),
 )
 
 # Plot cluster enrichment for select cell line
-cl <- 'A549'
 clusters.cl <- clusters[[cl]][[k - 1]]
 xplot <- enrichments[[cl]][[k - 1]]
 xplot[xplot < plot.thresh] <- plot.thresh
+xplot <- -log(xplot, base=10)
+xplot[xplot < 2] <- 0
 
+# Filter out categories without enrichment
+id.drop <- apply(xplot, MAR=1, function(z) max(z) < 3)
+
+# Initialize row ordering
+row.order <- order(
+  xplot[!id.drop, 1],
+  xplot[!id.drop, 2],
+  xplot[!id.drop, 3],  
+  xplot[!id.drop, 4],
+  xplot[!id.drop, 5],
+  xplot[!id.drop, 6],
+  xplot[!id.drop, 7]
+)
+
+# Initialize cluster counts
 superheat(
-  -log(xplot, base=10),
-  pretty.order.rows=TRUE,
+  xplot[!id.drop,][row.order,],
   left.label.text.size=3,
-  yr=compound.counts[rownames(xplot)],
+  yt=c(table(clusters.cl)),
+  yt.plot.type='bar',
+  yt.axis.name='Cluster size',
+  yr=compound.counts[rownames(xplot)][!id.drop][row.order],
   yr.plot.type='bar',
+  yr.axis.name='# compounds',
   heat.pal=heat.pal,
-  heat.pal.values=c(0, 0.25, seq(0.3, 1, by=0.05))
+  heat.pal.values=seq(0, 1, by=0.1),
+  heat.lim=c(0, -log(plot.thresh, base=10)),
+  left.label.size=0.6
 )
