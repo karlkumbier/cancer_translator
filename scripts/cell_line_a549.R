@@ -16,10 +16,37 @@ select_category <- function(x) {
   return(names(xtab)[which.max(xtab)])
 }
 
-count_categories <- function(x) {
-  # Count number of unique values in vector of categories
-  x <- na.omit(x)
-  return(length(unique(x)))
+# Initialize normalization and scoring functions for clustering analysis
+normalization <- function(z) {
+  return(rank(z) / length(z))
+  #z[z > quantile(z, 0.95)] <- quantile(z, 0.95)
+  #z[z < quantile(z, 0.05)] <- quantile(z, 0.05)
+  #return(z / sqrt(sum(z ^ 2)))
+}
+
+score_fun <- function(z) {
+  # Compute enrichment scores from cluster enrichment matrix
+  z[z == 0] <- min(z[z != 0])
+  logp <- -log(z, base=10)
+  p.gap <- apply(logp, MAR=1, function(zz) tail(diff(sort(zz)), 1))
+  return(median(p.gap))
+}
+
+cluster_stability <- function(x, k) {
+  # Compute kmeans cluster stability
+  c1 <- kmeans(x, centers=k, nstart=3, iter.max=25)$cluster
+  c1 <- sapply(1:k, function(kk) as.numeric(c1 == kk))
+  #c1[c1 == 0] <- -1
+  
+  c2 <- kmeans(x, centers=k, nstart=3, iter.max=25)$cluster
+  c2 <- sapply(1:k, function(kk) as.numeric(c2 == kk))
+  #c2[c2 == 0] <- -1
+  
+  #csim <- (t(c1) %*% c2) / nrow(c1)
+  csim <- cor(c1, c2)
+  row.max <- apply(csim, MAR=2, max)
+  col.max <- apply(csim, MAR=2, max)
+  return((mean(row.max) + mean(col.max)) / 2)
 }
 
 # Initialize analysis parameters
@@ -81,10 +108,6 @@ x.target <- 'data/Bioactivity_broad_label/' %>%
 
 x <- left_join(x, x.target, by='Compound_ID')
 
-xreference <- filter(x, Compound_Usage == 'reference_cpd') %>%
-  select(Compound_Usage, Compound_Category) %>%
-  filter(Compound_Category != '')
-
 xcat.tab <- filter(x, !is.na(Compound_Category)) %>%
   filter(Compound_Category != '') %>%
   dplyr::select(Compound_ID, Compound_Category) %>%
@@ -105,7 +128,7 @@ cat.keep <- xcat.tab.top$Compound_Category
 ################################################################################
 # Normalize data matrix
 l2norm <- function(z) z / sqrt(sum(z ^ 2))
-qt90 <- function(x) quantile(x, 0.9)
+qt90 <- function(x) quantile(x, 0.99)
 x <- mutate_if(x, is.numeric, l2norm)
 
 # Compute bioactivity scores for each well
@@ -157,44 +180,6 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 kvals <- 2:50
 pct.var.thresh <- 0.9
 n.stab <- 10
-cell.lines <- unique(x$Cell_Line)
-
-# Initialize normalization and scoring functions for clustering analysis
-normalization <- function(z) {
-  return(rank(z) / length(z))
-  #z[z > quantile(z, 0.95)] <- quantile(z, 0.95)
-  #z[z < quantile(z, 0.05)] <- quantile(z, 0.05)
-  #return(z / sqrt(sum(z ^ 2)))
-}
-
-score_fun <- function(z) {
-  # Compute enrichment scores from cluster enrichment matrix
-  min.p <- apply(z, MAR=1, min)
-  min.k <- apply(z, MAR=1, which.min)
-  
-  out <- data.frame(p=min.p, k=min.k) %>%
-    group_by(k) %>%
-    summarize(p=mean(p))
-  
-  return(mean(out$p))
-}
-
-cluster_stability <- function(x, k) {
-  # Compute kmeans cluster stability
-  c1 <- kmeans(x, centers=k, nstart=3, iter.max=25)$cluster
-  c1 <- sapply(1:k, function(kk) as.numeric(c1 == kk))
-  c1[c1 == 0] <- -1
-  
-  c2 <- kmeans(x, centers=k, nstart=3, iter.max=25)$cluster
-  c2 <- sapply(1:k, function(kk) as.numeric(c2 == kk))
-  c2[c2 == 0] <- -1
-  
-  #csim <- (t(c1) %*% c2) / nrow(c1)
-  csim <- cor(c1, c2)
-  row.max <- apply(csim, MAR=2, max)
-  col.max <- apply(csim, MAR=2, max)
-  return((mean(row.max) + mean(col.max)) / 2)
-}
 
 #' ## Case study for A549
 #' 
@@ -242,23 +227,6 @@ superheat(
   heat.pal.values=seq(0, 1, by=0.1),
   title='PCA features'
 )  
-
-# Normalize PCA features
-xc.feat.pca.norm <- apply(xc.pca$x[,id.select], MAR=2, normalization)
-
-superheat(
-  xc.feat.pca.norm,
-  row.dendrogram=TRUE,
-  pretty.order.rows=TRUE,
-  yt=var.explained[id.select],
-  yt.plot.type='bar',
-  yt.axis.name='Variance',
-  heat.pal=heat.pal,
-  bottom.label.text.angle=90,
-  bottom.label.text.size=3,
-  heat.pal.values=seq(0, 1, by=0.1),
-  title='PCA features, normalized'
-) 
 
 #' ### PC qualitative assessment
 #' Below we consider whether PC components that capture low variance in the 
@@ -349,7 +317,12 @@ superheat(
 #' relative to unnormalized PCs
 #+ clustering_unnormalized, fig.height=8, fig.width=12
 # Cluster compounds for select cell line
-# Cluster compounds for select cell line
+library(dbscan)
+
+cl <- hdbscan(xc.feat.pca, minPts=5)
+pairs(xc.feat.pca[,1:2], col=cl$cluster, pch=20)
+
+
 cluster.analysis <- lapply(kvals, function(k) {
   cluster <- kmeans(xc.feat.pca, centers=k, nstart=10, iter.max=25)$cluster
   
@@ -388,78 +361,34 @@ enrichments <- lapply(clusters, function(cluster) {
 
 xplot.unnorm <- data.frame(K=kvals) %>%
   mutate(Silhouette=colMeans(silhouettes)) %>%
-  mutate(Enrich=-log(sapply(enrichments, score_fun), base=10)) %>%
   mutate(Stability=stability) %>%
   mutate(PC_Normalize=FALSE)
 
-#' ### PCA clustering normalized
-#' Below we evaluate the strength of clusters (wrt silhouette score, enrichment)
-#' relative to normalized PCs
-#+ clustering_normalized, fig.height=12, fig.width=12
-# Cluster compounds for select cell line
-cluster.analysis <- lapply(kvals, function(k) {
-  cluster <- kmeans(xc.feat.pca.norm, centers=k, nstart=10, iter.max=25)$cluster
-  
-  # Cluster stability analysis
-  stability <- replicate(n.stab, cluster_stability(xc.feat.pca.norm, k))
-  return(list(cluster=cluster, stability=stability))
-})
-
-clusters <- lapply(cluster.analysis, function(z) z$cluster)
-stability <- sapply(cluster.analysis, function(z) mean(z$stability))
-
-# Compute clusters + silhouettes for range of k
-xc.dist <- dist(xc.feat.pca.norm)
-
-silhouettes <- sapply(clusters, function(cluster) {
-  return(cluster::silhouette(cluster, xc.dist)[,'sil_width'])
-})
-
-# Compute category enrichment at select resolution
-enrichments <- lapply(clusters, function(cluster) {
-  
-  # Compute enrichment of compound categories by cluster
-  enrichment <- sapply(1:max(cluster), function(k) {
-    hyper.test <- sapply(unique(xc$Compound_Category), function(cat) {
-      x <- sum(xc$Compound_Category == cat & cluster == k)
-      m <- sum(xc$Compound_Category == cat)
-      n <- sum(xc$Compound_Category != cat)
-      return(1 - phyper(x, m, n, sum(cluster == k)))
-    })
-    
-    return(hyper.test)
-  })
-  
-  return(data.frame(enrichment))
-})
-
-xplot.norm <- data.frame(K=kvals) %>%
-  mutate(Silhouette=colMeans(silhouettes)) %>%
-  mutate(Enrich=-log(sapply(enrichments, score_fun), base=10)) %>%
-  mutate(Stability=stability) %>%
-  mutate(PC_Normalize=TRUE)
-
 # Initialize visualization parameters
-p1 <- rbind(xplot.norm, xplot.unnorm) %>%
+p1 <- xplot.unnorm %>%
   ggplot(aes(x=K, y=Silhouette, col=PC_Normalize)) +
   geom_line(size=1.1) +
   theme_ipsum() +
   scale_color_d3() +
-  theme(legend.position=c(0.95, 0.85))
+  theme(legend.position='none')
 
-p2 <- rbind(xplot.norm, xplot.unnorm) %>% 
+p2 <- xplot.unnorm %>% 
   ggplot(aes(x=K, y=Stability, col=PC_Normalize)) +
   geom_line(size=1.1) +
   scale_color_d3() +
   theme_ipsum() +
   theme(legend.position='none')
 
-p3 <- rbind(xplot.norm, xplot.unnorm) %>% 
-  ggplot(aes(x=K, y=Enrich, col=PC_Normalize)) +
+xplot.enrich <- lapply(enrichments, score_fun) %>%
+  reshape2::melt() %>%
+  mutate(K=kvals[L1]) %>%
+  mutate(PC_Normalize=TRUE)
+
+p3 <- xplot.enrich %>% 
+  ggplot(aes(x=K, y=value, col=PC_Normalize)) +
   geom_line(size=1.1) +
   scale_color_d3() +
   theme_ipsum() +
   theme(legend.position='none')
-
 
 gridExtra::grid.arrange(p1, p2, p3, ncol=1)
