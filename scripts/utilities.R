@@ -325,20 +325,24 @@ intensity_normalize_ <- function(col, y) {
 ################################################################################
 # Functions for evaluating bioactivity of compounds
 ################################################################################
-bioactivity <- function(x, null_summary=max, n.core=1) {
+bioactivity <- function(x, xcov.inv, null_summary=max, n.core=1) {
   # Wrapper function to compute distance for each well to DMSO
 
-  # Compute center of DMSO point cloud
+  # Mean center feature set
   features <- '(^PC|^nonborder)'
-  xctl <- filter(x, Compound_ID == 'DMSO') %>% select(matches(features))
-  xctl <- colMeans(xctl)
-  
-  # Compoute distance from DMSO center for each well
+  ncells <- x$NCells
+  x <- mutate_if(x, is.numeric, function(z) z - mean(z)) %>% mutate(NCells=ncells)
   xwell <- select(x, matches(features))
-  well.dist <- sqrt(colMeans((t(xwell) - xctl) ^ 2))
-
+  
+  # Initialize DMSO point cloud center
+  xctl <- colMeans(filter(xwell, x$Compound_ID == 'DMSO'))
+  
+  # Compute malhalanobis distance
+  xdelta <- t(xwell) - xctl
+  well.dist <- sqrt(diag(t(xdelta) %*% xcov.inv %*% xdelta))
+  
   # Generate null distribution of maximum distance DMSO to DMSO center
-  null <- generate_null(x, null_summary=null_summary, n.core=n.core)
+  null <- generate_null(x, xcov.inv, null_summary=null_summary, n.core=n.core)
   
   # Normalize relative to control
   xdist <- data.frame(Dist=well.dist) %>%
@@ -349,31 +353,30 @@ bioactivity <- function(x, null_summary=max, n.core=1) {
   return(cbind(xdist, xmeta))
 }
 
-null_dist <- function(x, null_summary) {
-  # Compute maximum distance between DMSO wells and point DMSO center
-  xctl <- filter(x, Compound_ID == 'DMSO') %>% select(matches('(^PC|^nonborder)'))
-  xctl.mean <- colMeans(xctl)
-  
-  # Compute maximum distance
-  xdist <- sqrt(colMeans((t(xctl) - xctl.mean) ^ 2))
-  return(null_summary(xdist))
-}
-
-generate_null <- function(x, null_summary, n.samples=100, n.core=1) {
+generate_null <- function(x, xcov.inv, null_summary, n.samples=100, n.core=1) {
   # Wrapper function for generating null distributions through subsampling
   null.dist <- mclapply(1:n.samples, function(i) {
     set.seed(i)
-    return(generate_null_(x, null_summary))
+    return(generate_null_(x, xcov.inv, null_summary))
   }, mc.cores=n.core)
   
   return(unlist(null.dist))
 }
 
-generate_null_ <- function(x, null_summary) {
+generate_null_ <- function(x, xcov.inv, null_summary) {
   # Generate single instance of DMSO self-distance from subsample
-  x <- sample_frac(x, 2/3)
-  null.dist <- null_dist(x, null_summary)
-  return(null.dist)
+  features <- '(^PC|^nonborder)'
+  xwell <- sample_frac(x, 2/3) %>%
+    filter(Compound_ID == 'DMSO') %>% 
+    select(matches(features))
+  
+  xctl <- colMeans(xwell)
+  
+  # Compute malhalanobis distance
+  xdelta <- t(xwell) - xctl
+  xdist <- sqrt(diag(t(xdelta) %*% xcov.inv %*% xdelta))
+  
+  return(null_summary(xdist))
 }
 
 ################################################################################
