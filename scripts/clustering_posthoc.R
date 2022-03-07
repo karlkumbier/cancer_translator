@@ -37,6 +37,12 @@ x.cluster <- group_by(x.cluster.full, CellLine, Compound_Category) %>%
   ungroup()
 
 #' # Loss by compound category, cell line
+#' To assess the ability of different cell lines to detect different compound 
+#' categories, we consider our previously define loss — the geometric mean of
+#' precision, recall, and silhouette scores — by compound category and cell 
+#' line. The figure below reports the maximum loss over all clusters within each 
+#' cell line and compound category pair (i.e. is the category detected in any 
+#' "strong" cluster).
 #+ cluster_loss, fig.height=12, fig.width=16
 ################################################################################
 # Visualize heatmap of clustering strength
@@ -72,10 +78,15 @@ superheat(
   yr.axis.name.size=18,
   bottom.label.text.angle=90,
   bottom.label.size=0.75,
-  heat.pal.values=seq(0, 1, by=0.1)
+  heat.pal.values=seq(0, 1, by=0.1),
+  title='Loss by cell line, compound category'
 )
 
 #' # Loss and metrics by cluster, cell line
+#' The top figure below reports loss by cell line and cluster. For each cluster,
+#' we report the category associated with each cluster — i.e. the maximal 
+#' cluster. The bottom figure breaks down the cluster/cell line loss by each
+#' metric (precision, recall, silhouette) included in the geometric mean.
 #+ loss_metrics, fig.height=12, fig.width=16
 x.cluster.full <- x.cluster.full %>% 
   group_by(CellLine, Cluster) %>%

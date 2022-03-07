@@ -112,12 +112,20 @@ cat.keep <- xcat.tab.top$Compound_Category
 #' # Overview
 #' This notebook considers the problem clustering based on A549 phenotypic 
 #' profiles. Compounds are first filtered based on bioactivity — as specified in
-#' the `cell_line_broad` notebook.
-#+ bioactivity, fig.height=8, fig.width=12, echo=FALSE
+#' the `cell_line_broad` notebook. At a high level, bioactivity is based on the 
+#' mahalanobis distance (evaluated over phenotypic profiles) between a target
+#' well and a collection of DMSO control wells. 
+#' 
+#' Figures below report mahalanobis distance between a well (i.e. treatment 
+#' condition) and the DMSO point cloud center, normalized relative to the 
+#' average distance of individual DMSO wells from the DMSO point cloud center, 
+#' against cell count. Treatment conditions called as bioactive are highlighted 
+#' in orange.
+#+ bioactivity, fig.height=8, fig.width=12
 ################################################################################
 # Compute bioactivity scores
 ################################################################################
-# Normalize data matrix
+# l2-normalize data matrix
 ncells <- x$NCells
 x <- mutate_if(x, is.numeric, l2norm) %>% mutate(NCells=ncells)
 
@@ -131,7 +139,7 @@ xdist <- lapply(unique(x$PlateID), function(p) {
   return(bioactivity(out, qt90, xcov.inv=xcov.inv, n.core=n.core))
 })
 
-# Group bioactivity scores by treatment, cell line
+# Average bioactivity scores within treatment/cell line groups
 xgroup <- rbindlist(xdist) %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
@@ -150,19 +158,20 @@ mutate(xgroup, Bioactive=pval == 0) %>%
 
 #' # Clustering analysis
 #' The following case study consider the problem of clustering compounds based 
-#' on phenotypic profiles. Prior to clustering we filter to a compound set of:
+#' on phenotypic profiles. Prior to clustering we filter compounds as follows:
 #' 
 #' 1. Categories with at least `r min.cat` compounds 
-#' 2. Compounds that are called as bioactive (pval <= `r pval.thresh`)
-#' 3. Compounds that do not result in cell death phenotype (Ncells >= `r ncell.thresh`)
+#' 2. Compounds that are called as bioactive (pval $\le$ `r pval.thresh`)
+#' 3. Compounds that do not result in cell death phenotype (Ncells $\ge$ `r ncell.thresh`)
+#' 
+#' For each compound in the resulting set, we use the maximum dose level for 
+#' clustering analysis.
 #+ clustering_analysis
-################################################################################
-# Initialize cluster analysis dataset
-################################################################################
-# Initialize bioactive compound set
+
+# Initialize bioactive, non-death compound set
 compounds.select <- filter(xgroup, pval <= pval.thresh, NCells >= ncell.thresh)
 
-# Get compound counts for bioactive set
+# Get compound counts for bioactive set and filter based on minimum category size
 compound.table <- select(compounds.select, Compound_ID, Compound_Category) %>%
   distinct() %>%
   group_by(Compound_Category) %>%
@@ -181,10 +190,16 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 #' ## Case study for `r cell.line`
 #' 
 #' Analysis summary:
-#' - Features normalized (rank v. thresholded and l2 normalized)
-#' - PCA features computed (unnormalized, normalized)
-#' - Feature set = PCs that explain up to `r pct.var.thresh` variance
-#+ a549_analysis, fig.height=8, fig.width=16
+#' 
+#' - KS profile features are outlier trimmed @ 5th, 95th percentiles and l2 
+#' normalized
+#' - KS profiles are projected into PC-space and PCs that explain up to 
+#' `r pct.var.thresh` percent of variance are maintained.
+#' 
+#' These steps are intended to (i) limit the impact of "extreme" wells on 
+#' computed PCs and (ii) reduce the influence of highly redundant features on
+#' downstream clustering analysis.
+#+ clustering_analysis_preprocess, fig.height=8, fig.width=16
 
 # Initialize feature set for select cell line
 xc <- filter(x, Cell_Line == cell.line)
@@ -198,6 +213,10 @@ pct.var <- cumsum(var.explained)
 id.select <- pct.var < pct.var.thresh
 xc.feat.pca <- xc.pca$x[,id.select]
 
+#' the figure below reports features used in subsequent clustering analysis. 
+#' Rows correspond to individual wells (treatment conditions) and columns PC
+#' features. Bars at the top of the plot report the percent variance captured by 
+#' each PC feature.
 #+ pca_heatmap, fig.height=12, fig.width=12
 superheat(
   xc.feat.pca,
@@ -214,14 +233,18 @@ superheat(
 )  
 
 #' ### PCA clustering
-#' Below we evaluate the strength of clusters learned from PCAs. Clusters are 
-#' inferred using hdbscan with minimum cluster size set.
+#' Below we evaluate the strength of clusters learned from PCs. Clusters are 
+#' inferred using hdbscan, setting the  with minimum cluster size parameter 
+#' equal to the minimum category size defined above (`r min.cat`). We assess
+#' the strength of inferred clusters based on silhouette scores. The figure
+#' below reports silhouette scores by cluster.
+#' To assess the strength of inferred clusters, we compute silhouette scores
 #+ clustering, fig.height=8, fig.width=12
 
-# Compute mahalanobis distance between points
+# Compute clusters
 cl <- hdbscan(xc.feat.pca, minPts=min.cat)
 
-# Compute clusters + silhouettes for range of k
+# Compute silhouettes for inferred clusters
 xc.dist <- dist(xc.feat.pca)
 silhouette <- cluster::silhouette(cl$cluster, xc.dist)[,'sil_width']
 
@@ -241,6 +264,10 @@ ggplot(x.sil, aes(x=Idx, y=Silhouette, fill=Cluster)) +
   xlab(NULL) +
   ggtitle('Silhouette scores by cluster')
 
+#' Below we visualize inferred cluster in in umap space. In the top figure, 
+#' points corresponding to wells are colored by cluster. In the bottom figure
+#' points are colored by log cell count. Clearly defined clusters are marked by
+#' reduced cell counts.
 ################################################################################
 # UMAP visualization
 ################################################################################
@@ -273,6 +300,10 @@ mutate(xplot, log_ncells=log(NCells)) %>%
   scale_color_viridis_c() +
   ggtitle('UMAP-embedded phenotypic profiles')
 
+#' To assess the degree to which inferred clusters represent compound 
+#' categories, we compute the proportion of samples in each cluster belonging
+#' to a particular compound category. The figure below reports the top 
+#' categories (by proportion) represented in each cluster.
 #+ category_summary, fig.height=16, fig.width=16
 ################################################################################
 # Cluster category summary
@@ -293,7 +324,12 @@ data.frame(Cluster=as.factor(cl$cluster), Category=xc$Compound_Category) %>%
   xlab(NULL) +
   theme(legend.position='none') +
   ggtitle('Compound categories enrichment by cluster')
-  
+
+#' The figure below reports the enrichment of compound categories within each
+#' cluster based on based on hypergeometric tests. The two largest clusters are
+#' enriched for many categories and therefore unlikely to be useful for compound
+#' classification. In contrast, the smaller clusters are targeted towards 
+#' specific compound categories.  
 #+ cluster_heatmap, fig.height=12, fig.width=16, warning=FALSE
 ################################################################################
 # Compound clustering heatmap
@@ -332,16 +368,24 @@ superheat(
   heat.pal.values=seq(0, 1, by=0.1)
 )
 
-
-################################################################################
-# Objective function:
-# - Delta (by category) across clusters (relative to next best)
-#   - I.e. is this compound uniquely enriched within cluster
-# - Delta (by category) within cluster (relative to average)
-#   - I.e. is this cluster enriched for a small number of compounds
-# - Sum and weight by silhouette
-#   - I.e. does this occur in a "strong" cluster
-################################################################################
+#' To assess the overall quality of inferred clusters relative to a given cell 
+#' line, we define an objective function that captures (i) strength of 
+#' clustering (ii) how well clusters recapitulate compound category labels.
+#' Specifically, we define:
+#' 
+#' 1. *Precision:* of a cluster is given by proportion of samples in a given 
+#' cluster belonging to the maximally represented category. I.e. how much does 
+#' the cluster concentrate around a specific compound category.
+#' 2. *Recall:* of a cluster is given by the proportion of samples from the 
+#' maximally represented category that fall in a given cluster. I.e. how much
+#' of the top category does a given cluster recover?
+#' 3. *Silhouette:* is given by the average silhouette score over all samples
+#' in a given cluster. I.e. how tightly do samples within a cluster group 
+#' relative to samples between clusters.
+#' 
+#' Our objective function is given by the geometric mean of the three values 
+#' above. Below we compute objective funciton values for cell line: `r cell.line`
+#+ enrichment
 enrichment_score_ <- function(category, cluster, silhouette, k) {
 
   # Compute cluster category table 
