@@ -100,17 +100,24 @@ x.cluster.full <- x.cluster.full %>%
   ungroup() %>%
   mutate(Cluster=str_c(Cluster, ', ', Category))
 
-ggplot(x.cluster.full, aes(x=Cluster, y=Loss, fill=Category)) + 
+ggplot(x.cluster.full, aes(x=reorder_within(Cluster, Loss, CellLine), y=Loss, fill=Category)) + 
   geom_bar(stat='identity')  +
   facet_wrap(~CellLine, scales='free_y') +
   theme(legend.position='none') +
   coord_flip() +
   xlab(NULL)
 
-reshape2::melt(x.cluster.full, id.vars=c('CellLine', 'Cluster', 'Category')) %>%
-  ggplot(aes(x=Cluster, y=value, fill=variable)) + 
+# Plot loss by each sub component
+id.vars <- c('CellLine', 'Cluster', 'Category')
+xplot <- mutate(x.cluster.full, Cluster=str_c(Cluster, '__', CellLine)) %>%
+  group_by(CellLine) %>%
+  mutate(Cluster=factor(Cluster, levels=Cluster[order(Loss)])) %>%
+  ungroup() %>%
+  reshape2::melt(id.vars=id.vars)
+
+ggplot(xplot, aes(x=Cluster, y=value, fill=variable)) + 
   geom_bar(stat='identity', position='dodge')  +
-  facet_wrap(~CellLine, scales='free_y') +
+  facet_grid(CellLine~variable, scales='free_y') +
   scale_fill_nejm() +
   coord_flip() +
   xlab(NULL)
