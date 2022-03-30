@@ -325,6 +325,10 @@ intensity_normalize_ <- function(col, y) {
 ################################################################################
 # Functions for evaluating bioactivity of compounds
 ################################################################################
+mahalanobis_dist <- function(x, y, xcov.inv) {
+  return(sqrt(mahalanobis(x, y, xcov.inv, inverted=TRUE)))
+}
+
 bioactivity <- function(x, xcov.inv, null_summary=max, n.core=1) {
   # Wrapper function to compute distance for each well to DMSO
 
