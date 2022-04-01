@@ -127,6 +127,16 @@ x <- lapply(unique(x$Cell_Line), function(cl) {
 
 x <- rbindlist(x)
 
+#' the `cell_line_broad` notebook. At a high level, bioactivity is based on the 
+#' mahalanobis distance (evaluated over phenotypic profiles) between a target
+#' well and a collection of DMSO control wells. 
+#' 
+#' Figures below report mahalanobis distance between a well (i.e. treatment 
+#' condition) and the DMSO point cloud center, normalized relative to the 
+#' average distance of individual DMSO wells from the DMSO point cloud center, 
+#' against cell count. Treatment conditions called as bioactive are highlighted 
+#' in orange.
+#+ bioactivity, fig.height=8, fig.width=12
 ################################################################################
 # Initialize parameters for bioactivity analysis
 ################################################################################
@@ -161,7 +171,7 @@ xdist <- lapply(unique(x$PlateID), function(p) {
   return(bioactivity(out, xcov.inv.sqrt.p, null_summary))
 })
 
-# Group bioactivity scores by treatment, cell line
+# Average bioactivity scores within treatment/cell line groups
 xgroup <- rbindlist(xdist) %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
@@ -180,7 +190,7 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
 
 #' # Clustering analysis
 #' The following case study consider the problem of clustering compounds based 
-#' on phenotypic profiles. Prior to clustering we filter to a compound set of:
+#' on phenotypic profiles. Prior to clustering we filter compounds as follows:
 #' 
 #' 1. Categories with at least `r min.cat` compounds 
 #' 2. Compounds that are called as bioactive (distance > 1)
@@ -192,7 +202,7 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
 # Initialize bioactive compound set
 compounds.select <- filter(xgroup, DistNorm > 1, NCells >= ncell.thresh)
 
-# Get compound counts for bioactive set
+# Get compound counts for bioactive set and filter based on minimum category size
 compound.table <- select(compounds.select, Compound_ID, Compound_Category) %>%
   distinct() %>%
   group_by(Compound_Category) %>%
@@ -210,7 +220,6 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 
 #' ## Case study for `r cell.line`
 #+ a549_analysis, fig.height=8, fig.width=16
-
 # Initialize feature set for select cell line
 xc <- filter(x, Cell_Line == cell.line)
 xc.feat <- select(xc, matches('^non'))
@@ -228,6 +237,7 @@ cluster <- cl$cluster
 
 # Compute clusters + silhouettes for range of k
 xc.dist <- dist(as.matrix(xc.feat))
+
 silhouette <- cluster::silhouette(cl$cluster, xc.dist)[,'sil_width']
 
 x.sil <- data.frame(Cluster=as.factor(cl$cluster), Silhouette=silhouette) %>%
@@ -247,6 +257,10 @@ filter(x.sil, Cluster != 0) %>%
   xlab(NULL) +
   ggtitle('Silhouette scores by cluster')
 
+#' Below we visualize inferred cluster in in umap space. In the top figure, 
+#' points corresponding to wells are colored by cluster. In the bottom figure
+#' points are colored by log cell count. Clearly defined clusters are marked by
+#' reduced cell counts.
 ################################################################################
 # UMAP visualization
 ################################################################################
@@ -284,6 +298,10 @@ mutate(xplot, log_ncells=log(NCells)) %>%
   xlab('UMAP1') +
   ylab('UMAP2')
 
+#' To assess the degree to which inferred clusters represent compound 
+#' categories, we compute the proportion of samples in each cluster belonging
+#' to a particular compound category. The figure below reports the top 
+#' categories (by proportion) represented in each cluster.
 #+ category_summary, fig.height=16, fig.width=16
 ################################################################################
 # Cluster category summary
@@ -316,6 +334,7 @@ data.frame(Cluster=as.factor(cl$cluster), Category=xc$Compound_Category) %>%
 # - Sum and weight by silhouette
 #   - I.e. does this occur in a "strong" cluster
 ################################################################################
+
 enrichment_score_ <- function(category, cluster, silhouette, k) {
 
   # Compute cluster category table 
