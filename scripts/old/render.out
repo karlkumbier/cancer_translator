@@ -1,0 +1,518 @@
+
+
+processing file: cell_line_bioactivity.spin.Rmd
+  |                                                                              |                                                                      |   0%  |                                                                              |.....                                                                 |   7%
+  ordinary text without R code
+
+  |                                                                              |..........                                                            |  14%
+label: setup (with options) 
+List of 3
+ $ echo   : logi FALSE
+ $ warning: logi FALSE
+ $ message: logi FALSE
+
+── Attaching packages ─────────────────────────────────────── tidyverse 1.3.1 ──
+✔ ggplot2 3.3.5     ✔ purrr   0.3.4
+✔ tibble  3.1.5     ✔ dplyr   1.0.7
+✔ tidyr   1.1.4     ✔ stringr 1.4.0
+✔ readr   2.0.2     ✔ forcats 0.5.1
+── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+✖ dplyr::between()   masks data.table::between()
+✖ dplyr::filter()    masks stats::filter()
+✖ dplyr::first()     masks data.table::first()
+✖ dplyr::lag()       masks stats::lag()
+✖ dplyr::last()      masks data.table::last()
+✖ purrr::transpose() masks data.table::transpose()
+  |                                                                              |...............                                                       |  21%
+  ordinary text without R code
+
+  |                                                                              |....................                                                  |  29%
+label: bioactivity (with options) 
+List of 2
+ $ fig.height: num 8
+ $ fig.width : num 14
+
+  |                                                                              |.........................                                             |  36%
+  ordinary text without R code
+
+  |                                                                              |..............................                                        |  43%
+label: dist_v_p (with options) 
+List of 2
+ $ fig.height: num 8
+ $ fig.width : num 12
+
+  |                                                                              |...................................                                   |  50%
+   inline R code fragments
+
+  |                                                                              |........................................                              |  57%
+label: bioactivity_dist (with options) 
+List of 2
+ $ fig.height: num 12
+ $ fig.width : num 18
+
+  |                                                                              |.............................................                         |  64%
+  ordinary text without R code
+
+  |                                                                              |..................................................                    |  71%
+label: bioactivity_treat (with options) 
+List of 3
+ $ fig.height: num 10
+ $ fig.width : num 18
+ $ warning   : logi FALSE
+
+  |                                                                              |.......................................................               |  79%
+  ordinary text without R code
+
+  |                                                                              |............................................................          |  86%
+label: unnamed-chunk-1
+  |                                                                              |.................................................................     |  93%
+label: bioactivity_treat_heat (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 24
+ $ warning   : logi FALSE
+
+  |                                                                              |......................................................................| 100%
+  ordinary text without R code
+
+
+output file: cell_line_bioactivity.knit.md
+
+/usr/local/bin/pandoc +RTS -K512m -RTS cell_line_bioactivity.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output cell_line_bioactivity.html --lua-filter /usr/local/lib/R/4.1/site-library/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /usr/local/lib/R/4.1/site-library/rmarkdown/rmarkdown/lua/latex-div.lua --self-contained --variable bs3=TRUE --standalone --section-divs --template /usr/local/lib/R/4.1/site-library/rmarkdown/rmd/h/default.html --no-highlight --variable highlightjs=1 --variable theme=bootstrap --include-in-header /var/folders/cy/1jgnhtk91d144tb0kyh6jrl80000gn/T//RtmpXAXMvu/rmarkdown-str96b736157141.html --mathjax --variable 'mathjax-url:https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' 
+
+Output created: cell_line_bioactivity.html
+
+
+processing file: cell_line_classification.spin.Rmd
+  |                                                                              |                                                                      |   0%  |                                                                              |....                                                                  |   6%
+  ordinary text without R code
+
+  |                                                                              |.........                                                             |  12%
+label: setup (with options) 
+List of 3
+ $ echo   : logi FALSE
+ $ warning: logi FALSE
+ $ message: logi FALSE
+
+
+Attaching package: 'iRF'
+
+The following object is masked from 'package:dplyr':
+
+    combine
+
+The following object is masked from 'package:ggplot2':
+
+    margin
+
+Loading required package: lattice
+
+Attaching package: 'caret'
+
+The following object is masked from 'package:purrr':
+
+    lift
+
+  |                                                                              |.............                                                         |  19%
+  ordinary text without R code
+
+  |                                                                              |..................                                                    |  25%
+label: load_bioactivity
+  |                                                                              |......................                                                |  31%
+   inline R code fragments
+
+  |                                                                              |..........................                                            |  38%
+label: random_holdout (with options) 
+List of 4
+ $ fig.height: num 8
+ $ fig.width : num 15
+ $ message   : logi FALSE
+ $ echo      : logi FALSE
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+  |                                                                              |...............................                                       |  44%
+  ordinary text without R code
+
+  |                                                                              |...................................                                   |  50%
+label: random_holdout_acc (with options) 
+List of 3
+ $ fig.height: num 8
+ $ fig.width : num 18
+ $ message   : logi FALSE
+
+`summarise()` has grouped output by 'Cell_Line'. You can override using the `.groups` argument.
+`summarise()` has grouped output by 'Cell_Line'. You can override using the `.groups` argument.
+  |                                                                              |.......................................                               |  56%
+label: random_holdout_acc_dose (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 18
+ $ message   : logi FALSE
+
+  |                                                                              |............................................                          |  62%
+label: random_holdout_acc_hm (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 24
+ $ message   : logi FALSE
+
+  |                                                                              |................................................                      |  69%
+  ordinary text without R code
+
+  |                                                                              |....................................................                  |  75%
+label: compound_holdout (with options) 
+List of 4
+ $ fig.height: num 8
+ $ fig.width : num 18
+ $ message   : logi FALSE
+ $ echo      : logi FALSE
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+  |                                                                              |.........................................................             |  81%
+label: cpd_holdout_overview (with options) 
+List of 2
+ $ fig.height: num 8
+ $ fig.width : num 18
+
+  |                                                                              |.............................................................         |  88%
+label: cpd_holdout_acc_dose (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 18
+ $ message   : logi FALSE
+
+  |                                                                              |..................................................................    |  94%
+label: cpd_holdout_acc_hm (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 24
+ $ message   : logi FALSE
+
+  |                                                                              |......................................................................| 100%
+  ordinary text without R code
+
+
+output file: cell_line_classification.knit.md
+
+/usr/local/bin/pandoc +RTS -K512m -RTS cell_line_classification.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output cell_line_classification.html --lua-filter /usr/local/lib/R/4.1/site-library/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /usr/local/lib/R/4.1/site-library/rmarkdown/rmarkdown/lua/latex-div.lua --self-contained --variable bs3=TRUE --standalone --section-divs --template /usr/local/lib/R/4.1/site-library/rmarkdown/rmd/h/default.html --no-highlight --variable highlightjs=1 --variable theme=bootstrap --include-in-header /var/folders/cy/1jgnhtk91d144tb0kyh6jrl80000gn/T//RtmpXAXMvu/rmarkdown-str96b7194d981c.html --mathjax --variable 'mathjax-url:https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' 
+
+Output created: cell_line_classification.html
+
+
+processing file: marker_bioactivity.spin.Rmd
+  |                                                                              |                                                                      |   0%  |                                                                              |.......                                                               |  10%
+  ordinary text without R code
+
+  |                                                                              |..............                                                        |  20%
+label: setup (with options) 
+List of 2
+ $ echo   : logi FALSE
+ $ message: logi FALSE
+
+  |                                                                              |.....................                                                 |  30%
+  ordinary text without R code
+
+  |                                                                              |............................                                          |  40%
+label: bioactivity (with options) 
+List of 2
+ $ fig.height: num 8
+ $ fig.width : num 14
+
+  |                                                                              |...................................                                   |  50%
+   inline R code fragments
+
+  |                                                                              |..........................................                            |  60%
+label: bioactivity_grouped (with options) 
+List of 2
+ $ fig.height: num 8
+ $ fig.width : num 14
+
+  |                                                                              |.................................................                     |  70%
+  ordinary text without R code
+
+  |                                                                              |........................................................              |  80%
+label: bioactivity_treat (with options) 
+List of 3
+ $ fig.height: num 10
+ $ fig.width : num 18
+ $ warning   : logi FALSE
+
+  |                                                                              |...............................................................       |  90%
+label: bioactivity_treat_heat (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 24
+ $ warning   : logi FALSE
+
+  |                                                                              |......................................................................| 100%
+  ordinary text without R code
+
+
+output file: marker_bioactivity.knit.md
+
+/usr/local/bin/pandoc +RTS -K512m -RTS marker_bioactivity.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output marker_bioactivity.html --lua-filter /usr/local/lib/R/4.1/site-library/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /usr/local/lib/R/4.1/site-library/rmarkdown/rmarkdown/lua/latex-div.lua --self-contained --variable bs3=TRUE --standalone --section-divs --template /usr/local/lib/R/4.1/site-library/rmarkdown/rmd/h/default.html --no-highlight --variable highlightjs=1 --variable theme=bootstrap --include-in-header /var/folders/cy/1jgnhtk91d144tb0kyh6jrl80000gn/T//RtmpXAXMvu/rmarkdown-str96b77e590208.html --mathjax --variable 'mathjax-url:https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' 
+
+Output created: marker_bioactivity.html
+
+
+processing file: marker_classification.spin.Rmd
+  |                                                                              |                                                                      |   0%  |                                                                              |.....                                                                 |   7%
+  ordinary text without R code
+
+  |                                                                              |.........                                                             |  13%
+label: setup (with options) 
+List of 2
+ $ echo   : logi FALSE
+ $ message: logi FALSE
+
+  |                                                                              |..............                                                        |  20%
+  ordinary text without R code
+
+  |                                                                              |...................                                                   |  27%
+label: load_bioactivity
+  |                                                                              |.......................                                               |  33%
+   inline R code fragments
+
+  |                                                                              |............................                                          |  40%
+label: random_holdout (with options) 
+List of 4
+ $ fig.height: num 8
+ $ fig.width : num 15
+ $ message   : logi FALSE
+ $ echo      : logi FALSE
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+
+Attaching package: 'foreach'
+
+The following objects are masked from 'package:purrr':
+
+    accumulate, when
+
+  |                                                                              |.................................                                     |  47%
+label: random_holdout_acc (with options) 
+List of 3
+ $ fig.height: num 8
+ $ fig.width : num 18
+ $ message   : logi FALSE
+
+`summarise()` has grouped output by 'Markerset'. You can override using the `.groups` argument.
+`summarise()` has grouped output by 'Markerset'. You can override using the `.groups` argument.
+  |                                                                              |.....................................                                 |  53%
+label: random_holdout_acc_dose (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 18
+ $ message   : logi FALSE
+
+  |                                                                              |..........................................                            |  60%
+label: random_holdout_acc_hm (with options) 
+List of 3
+ $ fig.height: num 12
+ $ fig.width : num 24
+ $ message   : logi FALSE
+
+  |                                                                              |...............................................                       |  67%
+  ordinary text without R code
+
+  |                                                                              |...................................................                   |  73%
+label: compound_holdout (with options) 
+List of 4
+ $ fig.height: num 8
+ $ fig.width : num 18
+ $ message   : logi FALSE
+ $ echo      : logi FALSE
+
+Quitting from lines 225-244 (marker_classification.spin.Rmd) 
+Error in rbindlist(ypred) : 
+  Item 1 of input is not a data.frame, data.table or list
+Calls: <Anonymous> ... withVisible -> eval -> eval -> %>% -> mutate -> rbindlist
+In addition: There were 19 warnings (use warnings() to see them)
+
+Execution halted
