@@ -179,37 +179,6 @@ xc <- filter(x, Cell_Line == cell.line)
 xc.feat <- select(xc, matches('^non'))
 colnames(xc.feat) <- str_remove_all(colnames(xc.feat), '^nonborder\\.\\.\\.')
 
-#' ### Clustering
-#' Below we evaluate the strength of clusters inferred using hdbscan with 
-#' minimum cluster size set to the smallest allowable compound category:
-#' `r min.cat`.
-#+ clustering, fig.height=8, fig.width=12
-
-# Compute hdbscan clusters
-cl <- hdbscan(xc.feat, minPts=min.cat)
-cluster <- cl$cluster
-
-# Compute clusters + silhouettes for range of k
-xc.dist <- dist(as.matrix(xc.feat))
-
-silhouette <- cluster::silhouette(cl$cluster, xc.dist)[,'sil_width']
-
-x.sil <- data.frame(Cluster=as.factor(cl$cluster), Silhouette=silhouette) %>%
-  group_by(Cluster) %>%
-  arrange(Silhouette) %>%
-  mutate(Idx=1:n()) %>%
-  ungroup()
-
-filter(x.sil, Cluster != 0) %>%
-  ggplot(aes(x=Idx, y=Silhouette, fill=Cluster)) +
-  geom_bar(stat='identity') +
-  coord_flip() +
-  scale_fill_hue(l=60) +
-  facet_wrap(~Cluster, scales='free_y', nrow=3) +
-  theme(legend.position='None') +
-  theme(axis.text.y=element_blank()) +
-  xlab(NULL) +
-  ggtitle('Silhouette scores by cluster')
 
 #' Below we visualize inferred cluster in in umap space. In the top figure, 
 #' points corresponding to wells are colored by cluster. In the bottom figure
@@ -226,109 +195,15 @@ xumap <- umap(xc.feat)
 # Initialize data for visualization
 xplot <- data.frame(X1=xumap$layout[,1], X2=xumap$layout[,2]) %>%
   mutate(Cluster=as.factor(cl$cluster[1:n()])) %>%
+  mutate(Category=xc$Compound_Category) %>%
   mutate(NCells=xc$NCells[1:n()])
-
-# Initialize cluster to be dropped - negative silhouette
-x.sil.avg <- group_by(x.sil, Cluster) %>% summarize(Silhouette=mean(Silhouette))
-k.drop <- filter(x.sil.avg, Silhouette <= 0)$Cluster
 
 # Plot clusters/cell counts in UMAP
 mutate(xplot, log_ncells=log(NCells)) %>%
-  filter(!Cluster %in% k.drop) %>%
-  ggplot(aes(x=X1, y=X2, col=Cluster)) +
+  ggplot(aes(x=X1, y=X2, col=(Category == 'tubulin polymerization inhibitor'))) +
   geom_point(alpha=0.8) +
-  scale_color_hue(l=60) +
   ggtitle('UMAP-embedded phenotypic profiles') +
   xlab('UMAP1') +
   ylab('UMAP2') +
-  theme(legend.position='none')
-
-mutate(xplot, log_ncells=log(NCells)) %>%
-  filter(!Cluster %in% k.drop) %>%
-  ggplot(aes(x=X1, y=X2, col=log_ncells)) +
-  geom_point(alpha=0.8) +
-  scale_color_viridis_c() +
-  ggtitle('UMAP-embedded phenotypic profiles') +
-  xlab('UMAP1') +
-  ylab('UMAP2')
-
-#' To assess the degree to which inferred clusters represent compound 
-#' categories, we compute the proportion of samples in each cluster belonging
-#' to a particular compound category. The figure below reports the top 
-#' categories (by proportion) represented in each cluster.
-#+ category_summary, fig.height=16, fig.width=16
-################################################################################
-# Cluster category summary
-################################################################################
-data.frame(Cluster=as.factor(cl$cluster), Category=xc$Compound_Category) %>%
-  filter(Cluster != 0) %>%
-  group_by(Cluster) %>%
-  mutate(ClusterN=str_c(Cluster, ', n = ', n())) %>%
-  group_by(Cluster, Category, ClusterN) %>%
-  summarize(Count=n(), .groups='drop') %>%
-  group_by(Cluster) %>%
-  mutate(Proportion=Count / sum(Count), Count=n()) %>%
-  top_n(5, Proportion) %>%
-  ggplot(aes(x=reorder_within(Category, Proportion, Cluster), y=Proportion)) +
-  geom_col(position='dodge', width=0.8, aes(fill=Cluster)) +
-  facet_wrap(ClusterN~., scales='free_y', nrow=3) +
-  scale_fill_hue(l=60) +
-  coord_flip() +
-  xlab(NULL) +
   theme(legend.position='none') +
-  ggtitle('Compound categories enrichment by cluster')
-  
-
-################################################################################
-# Objective function:
-# - Delta (by category) across clusters (relative to next best)
-#   - I.e. is this compound uniquely enriched within cluster
-# - Delta (by category) within cluster (relative to average)
-#   - I.e. is this cluster enriched for a small number of compounds
-# - Sum and weight by silhouette
-#   - I.e. does this occur in a "strong" cluster
-################################################################################
-
-enrichment_score_ <- function(category, cluster, silhouette, k) {
-
-  # Compute cluster category table 
-  category.k <- category[cluster == k]  
-  category.table.k <- c(table(category.k))
-  prec.k <- max(category.table.k) / sum(category.table.k)
-  
-  # Compute proportion of compounds identified from max category
-  max.cat <- names(category.table.k)[which.max(category.table.k)]
-  rec.k <- max(category.table.k) / table(category)[max.cat]
-  
-  # Initialize silhouette score for cluster k
-  sil.k <- silhouette$Silhouette[silhouette$Cluster == k]
-  sil.k <- max(0, sil.k)
-  
-  out <- data.frame(Silhouette=sil.k) %>%
-    mutate(Prec=prec.k) %>%
-    mutate(Rec=rec.k) %>%
-    mutate(Category=max.cat) %>%
-    mutate(Cluster=k)
-  
-  return(out)
-}
-
-enrichment_score <- function(category, cluster, silhouette) {
-  # Wrapper function for computing enrichment across all clusters
-  out <- lapply(sort(unique(cluster)), function(k) {
-    enrichment_score_(category, cluster, silhouette, k)
-  })
-  
-  return(rbindlist(out))
-}
-
-
-loss <- enrichment_score(xc$Compound_Category, cl$cluster, x.sil.avg)
-
-# Initialize analysis output
-x.cluster.tab <- data.frame(Compound_ID=xc$Compound_ID) %>%
-  mutate(Compound_Category=xc$Compound_Category) %>%
-  mutate(Cluster=cluster) %>%
-  mutate(CellLine=cell.line)
-
-save(file=str_c(output.dir, cell.line, '.Rdata'), x.cluster.tab, loss)
+  scale_color_nejm()
