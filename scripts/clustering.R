@@ -21,25 +21,10 @@ select_category <- function(x) {
 }
 
 ################################################################################
-# Initialize functional parameters to be used in analysis
-################################################################################
-# Bioactivity thresholding - beyond 90th percentile of DMSO wells
-qt90 <- function(x) quantile(x, 0.90)
-
-# Feature normalization - outlier trim + l2 norm
-l2norm <- function(z) z / sqrt(sum(z ^ 2))
-
-normalization <- function(z) {
-  z[z > quantile(z, 0.95)] <- quantile(z, 0.95)
-  z[z < quantile(z, 0.05)] <- quantile(z, 0.05)
-  return(l2norm(z))
-}
-
-################################################################################
 # Initialize constant parameters to be used in analysis
 ################################################################################
 # Initialize analysis parameters
-intensity.normalize <- TRUE
+intensity.normalize <- FALSE
 n.core <- 16
 min.cat <- 5
 pval.thresh <- 0
@@ -47,7 +32,6 @@ ncell.thresh <- 50
 
 # Initialize clustering parameters
 #cell.line <- 'OVCAR4'
-pct.var.thresh <- 0.95
 
 # Initialize color palettes
 heat.pal <- viridis::viridis(10)
@@ -55,22 +39,24 @@ heat.pal <- viridis::viridis(10)
 ################################################################################
 # Load dataset
 ################################################################################
-# Initialize input/output directories and load KS profile data
-analysis.dir <- '~/github/cancer_translator/'
-output.dir <- str_c(analysis.dir, 'results/clustering/')
-dir.create(output.dir, showWarnings=FALSE)
-  
-setwd(analysis.dir)
+setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
 
+# Load KS profile data
 data.dir <- 'data/screens/LH_CDC_1/'
 load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
+x <- dplyr::select(x, -matches('^PC'))
+
+# initialize output directories
+output.dir <- '~/github/cancer_translator/results/clustering/'
+dir.create(output.dir, showWarnings=FALSE)
 
 # Clean compound categories
 x <- group_by(x, Compound_ID) %>%
   mutate(Compound_Category=select_category(Compound_Category)) %>%
   ungroup()
 
+# Initialize # of cell lines
 n.cell.line <- length(unique(x$Cell_Line))
 
 # Filter to compound/dose combinations evaluated in all cell lines
@@ -114,21 +100,65 @@ cat.keep <- xcat.tab.top$Compound_Category
 #' profiles. Compounds are first filtered based on bioactivity — as specified in
 #' the `cell_line_broad` notebook.
 #+ bioactivity, fig.height=8, fig.width=12, echo=FALSE
+# Mean-center features by cell line for subsequent analysis
+center <- function(z) z - mean(z)
+
+xfeat <- dplyr::select(x, matches('(^non|Cell_Line)')) %>%
+  group_by(Cell_Line) %>%
+  mutate_if(is.numeric, center) %>%
+  ungroup()
+
+# Weight features proportional to sum absolute correlation
+x <- lapply(unique(x$Cell_Line), function(cl) {
+  
+  # Compute feature correlation
+  xfeat.c <- filter(xfeat, Cell_Line == cl) %>% dplyr::select(-Cell_Line)
+  xnfeat.c <- filter(x, Cell_Line == cl) %>% dplyr::select(-matches('(^non)'))
+  xcor <- cor(xfeat.c)
+  
+  # Compute feature weight
+  xcor.wt <- rowSums(1 - abs(xcor))
+  xcor.wt <- xcor.wt / max(xcor.wt)
+  
+  # Weight features
+  xfeat.c <- data.frame(t(t(xfeat.c) * xcor.wt))
+  return(cbind(xnfeat.c, xfeat.c))
+})
+
+x <- rbindlist(x)
+
+################################################################################
+# Initialize parameters for bioactivity analysis
+################################################################################
+# Initialize DMSO distance summary function
+null_summary <- function(x) {
+  iqr.thresh <- 1.5 * IQR(x)
+  return(max(x[x < median(x) + iqr.thresh]))
+}
+
+# Compute root-inverse covariance matrix by cell line
+xcov.inv.sqrt <- lapply(unique(x$Cell_Line), function(cl) {
+  # Initialize cell line feature matrix
+  features <- '(^nonborder)'
+  xfeat <- filter(x, Cell_Line == cl) %>% select(matches(features))
+  
+  # Compute inverse sqrt covariance
+  xcov.inv <- solve(cov(xfeat))
+  svds <- svd(xcov.inv)
+  return(diag(ncol(xfeat)))
+  #return(svds$u %*% diag(sqrt(svds$d)) %*% t(svds$u))
+})
+
+names(xcov.inv.sqrt) <- unique(x$Cell_Line)
+
+
 ################################################################################
 # Compute bioactivity scores
 ################################################################################
-# Normalize data matrix
-ncells <- x$NCells
-x <- mutate_if(x, is.numeric, l2norm) %>% mutate(NCells=ncells)
-
-# Compute inverse covariance matrix
-xfeat <- dplyr::select(x, matches('^nonborder'))
-xcov.inv <- solve(cov(xfeat))
-
-# Compute bioactivity scores for each well
 xdist <- lapply(unique(x$PlateID), function(p) {
   out <- filter(x, PlateID == p) %>% dplyr::select(-matches('^PC'))
-  return(bioactivity(out, qt90, xcov.inv=xcov.inv, n.core=n.core))
+  xcov.inv.sqrt.p <- xcov.inv.sqrt[[out$Cell_Line[1]]]
+  return(bioactivity(out, xcov.inv.sqrt.p, null_summary))
 })
 
 # Group bioactivity scores by treatment, cell line
@@ -137,10 +167,10 @@ xgroup <- rbindlist(xdist) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
   ungroup() %>%
   group_by(Cell_Line, Compound_ID, Compound_Category) %>% 
-  summarize(DistNorm=mean(DistNorm), pval=mean(pval), NCells=mean(NCells), .groups='drop') %>%
+  summarize(DistNorm=mean(DistNorm), NCells=mean(NCells), .groups='drop') %>%
   arrange(Compound_ID, Cell_Line) 
 
-mutate(xgroup, Bioactive=pval == 0) %>%
+mutate(xgroup, Bioactive=DistNorm > 1) %>%
   ggplot(aes(x=NCells, y=DistNorm)) +
   geom_point(aes(col=Bioactive), alpha=0.6) +
   facet_wrap(~Cell_Line) +
@@ -153,14 +183,14 @@ mutate(xgroup, Bioactive=pval == 0) %>%
 #' on phenotypic profiles. Prior to clustering we filter to a compound set of:
 #' 
 #' 1. Categories with at least `r min.cat` compounds 
-#' 2. Compounds that are called as bioactive (pval <= `r pval.thresh`)
+#' 2. Compounds that are called as bioactive (distance > 1)
 #' 3. Compounds that do not result in cell death phenotype (Ncells >= `r ncell.thresh`)
 #+ clustering_analysis
 ################################################################################
 # Initialize cluster analysis dataset
 ################################################################################
 # Initialize bioactive compound set
-compounds.select <- filter(xgroup, pval <= pval.thresh, NCells >= ncell.thresh)
+compounds.select <- filter(xgroup, DistNorm > 1, NCells >= ncell.thresh)
 
 # Get compound counts for bioactive set
 compound.table <- select(compounds.select, Compound_ID, Compound_Category) %>%
@@ -179,50 +209,25 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
   ungroup()
 
 #' ## Case study for `r cell.line`
-#' 
-#' Analysis summary:
-#' - Features normalized (rank v. thresholded and l2 normalized)
-#' - PCA features computed (unnormalized, normalized)
-#' - Feature set = PCs that explain up to `r pct.var.thresh` variance
 #+ a549_analysis, fig.height=8, fig.width=16
 
 # Initialize feature set for select cell line
 xc <- filter(x, Cell_Line == cell.line)
-xc.feat <- select(xc, matches('^non')) %>% mutate_all(normalization)
+xc.feat <- select(xc, matches('^non'))
 colnames(xc.feat) <- str_remove_all(colnames(xc.feat), '^nonborder\\.\\.\\.')
 
-# Compute principle component features for select cell line
-xc.pca <- prcomp(xc.feat, scale=FALSE)
-var.explained <- xc.pca$sdev ^ 2 / sum(xc.pca$sdev ^ 2)
-pct.var <- cumsum(var.explained)
-id.select <- pct.var < pct.var.thresh
-xc.feat.pca <- xc.pca$x[,id.select]
-
-#+ pca_heatmap, fig.height=12, fig.width=12
-superheat(
-  xc.feat.pca,
-  row.dendrogram=TRUE,
-  pretty.order.rows=TRUE,
-  yt=var.explained[id.select],
-  yt.plot.type='bar',
-  yt.axis.name='Variance explained',
-  heat.pal=heat.pal,
-  bottom.label.text.angle=90,
-  bottom.label.text.size=3,
-  heat.pal.values=seq(0, 1, by=0.1),
-  title='PCA features'
-)  
-
-#' ### PCA clustering
-#' Below we evaluate the strength of clusters learned from PCAs. Clusters are 
-#' inferred using hdbscan with minimum cluster size set.
+#' ### Clustering
+#' Below we evaluate the strength of clusters inferred using hdbscan with 
+#' minimum cluster size set to the smallest allowable compound category:
+#' `r min.cat`.
 #+ clustering, fig.height=8, fig.width=12
 
-# Compute mahalanobis distance between points
-cl <- hdbscan(xc.feat.pca, minPts=min.cat)
+# Compute hdbscan clusters
+cl <- hdbscan(xc.feat, minPts=min.cat)
+cluster <- cl$cluster
 
 # Compute clusters + silhouettes for range of k
-xc.dist <- dist(xc.feat.pca)
+xc.dist <- dist(as.matrix(xc.feat))
 silhouette <- cluster::silhouette(cl$cluster, xc.dist)[,'sil_width']
 
 x.sil <- data.frame(Cluster=as.factor(cl$cluster), Silhouette=silhouette) %>%
@@ -231,11 +236,12 @@ x.sil <- data.frame(Cluster=as.factor(cl$cluster), Silhouette=silhouette) %>%
   mutate(Idx=1:n()) %>%
   ungroup()
 
-ggplot(x.sil, aes(x=Idx, y=Silhouette, fill=Cluster)) +
+filter(x.sil, Cluster != 0) %>%
+  ggplot(aes(x=Idx, y=Silhouette, fill=Cluster)) +
   geom_bar(stat='identity') +
   coord_flip() +
   scale_fill_hue(l=60) +
-  facet_wrap(~Cluster, scales='free_y') +
+  facet_wrap(~Cluster, scales='free_y', nrow=3) +
   theme(legend.position='None') +
   theme(axis.text.y=element_blank()) +
   xlab(NULL) +
@@ -247,7 +253,7 @@ ggplot(x.sil, aes(x=Idx, y=Silhouette, fill=Cluster)) +
 # Initialize umap embedding for visualization
 configs <- umap.defaults
 configs$n_neighbors <- min.cat
-xumap <- umap(xc.feat.pca)
+xumap <- umap(xc.feat)
 
 # Initialize data for visualization
 xplot <- data.frame(X1=xumap$layout[,1], X2=xumap$layout[,2]) %>%
@@ -263,21 +269,27 @@ mutate(xplot, log_ncells=log(NCells)) %>%
   filter(!Cluster %in% k.drop) %>%
   ggplot(aes(x=X1, y=X2, col=Cluster)) +
   geom_point(alpha=0.8) +
-  scale_color_hue(l=60, drop=FALSE) +
-  ggtitle('UMAP-embedded phenotypic profiles')
+  scale_color_hue(l=60) +
+  ggtitle('UMAP-embedded phenotypic profiles') +
+  xlab('UMAP1') +
+  ylab('UMAP2') +
+  theme(legend.position='none')
 
 mutate(xplot, log_ncells=log(NCells)) %>%
   filter(!Cluster %in% k.drop) %>%
   ggplot(aes(x=X1, y=X2, col=log_ncells)) +
   geom_point(alpha=0.8) +
   scale_color_viridis_c() +
-  ggtitle('UMAP-embedded phenotypic profiles')
+  ggtitle('UMAP-embedded phenotypic profiles') +
+  xlab('UMAP1') +
+  ylab('UMAP2')
 
 #+ category_summary, fig.height=16, fig.width=16
 ################################################################################
 # Cluster category summary
 ################################################################################
 data.frame(Cluster=as.factor(cl$cluster), Category=xc$Compound_Category) %>%
+  filter(Cluster != 0) %>%
   group_by(Cluster) %>%
   mutate(ClusterN=str_c(Cluster, ', n = ', n())) %>%
   group_by(Cluster, Category, ClusterN) %>%
@@ -287,51 +299,13 @@ data.frame(Cluster=as.factor(cl$cluster), Category=xc$Compound_Category) %>%
   top_n(5, Proportion) %>%
   ggplot(aes(x=reorder_within(Category, Proportion, Cluster), y=Proportion)) +
   geom_col(position='dodge', width=0.8, aes(fill=Cluster)) +
-  facet_wrap(ClusterN~., scales='free_y') +
+  facet_wrap(ClusterN~., scales='free_y', nrow=3) +
   scale_fill_hue(l=60) +
   coord_flip() +
   xlab(NULL) +
   theme(legend.position='none') +
   ggtitle('Compound categories enrichment by cluster')
   
-#+ cluster_heatmap, fig.height=12, fig.width=16, warning=FALSE
-################################################################################
-# Compound clustering heatmap
-################################################################################
-# Compute enrichment of compound categories by cluster
-cluster <- cl$cluster
-
-enrichment <- sapply(min(cluster):max(cluster), function(k) {
-    hyper.test <- sapply(unique(xc$Compound_Category), function(cat) {
-      x <- sum(xc$Compound_Category == cat & cluster == k)
-      m <- sum(xc$Compound_Category == cat)
-      n <- sum(xc$Compound_Category != cat)
-      if (x == 0) return(1)
-      return(1 - phyper(x, m, n, sum(cluster == k)))
-  })
-})
-
-# Threshold enrichment for visualization
-xplot <- enrichment
-xplot[xplot < 1e-8] <- 1e-8
-xplot <- -log(xplot, base=10)
-colnames(xplot) <- min(cluster):max(cluster)
-
-# Filter to compounds enriched in > 1 cluster
-id.keep <- rowSums(xplot > 2) > 0
-
-superheat(
-  xplot[id.keep,],
-  pretty.order.cols=TRUE,
-  pretty.order.rows=TRUE,
-  yt=log(c(table(cluster)), base=2),
-  yt.plot.type='bar',
-  yt.axis.name='Log # compounds',
-  left.label.text.size=3,
-  left.label.size=0.3,
-  heat.pal.values=seq(0, 1, by=0.1)
-)
-
 
 ################################################################################
 # Objective function:

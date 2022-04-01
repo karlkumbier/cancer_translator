@@ -325,63 +325,55 @@ intensity_normalize_ <- function(col, y) {
 ################################################################################
 # Functions for evaluating bioactivity of compounds
 ################################################################################
-mahalanobis_dist <- function(x, y, xcov.inv) {
-  return(sqrt(mahalanobis(x, y, xcov.inv, inverted=TRUE)))
-}
-
-bioactivity <- function(x, xcov.inv, null_summary=max, n.core=1) {
+bioactivity <- function(x, xcov.inv.sqrt, null_summary=max) {
   # Wrapper function to compute distance for each well to DMSO
 
-  # Mean center feature set
+  # Feature-center data
+  center <- function(z) z - mean(z)
   features <- '(^PC|^nonborder)'
-  ncells <- x$NCells
-  x <- mutate_if(x, is.numeric, function(z) z - mean(z)) %>% mutate(NCells=ncells)
   xwell <- select(x, matches(features))
   
-  # Initialize DMSO point cloud center
-  xctl <- colMeans(filter(xwell, x$Compound_ID == 'DMSO'))
+  # Transform through inverse sqrt covariance
+  qwell <- as.matrix(xwell) %*% xcov.inv.sqrt
   
-  # Compute malhalanobis distance
-  xdelta <- t(xwell) - xctl
-  well.dist <- sqrt(diag(t(xdelta) %*% xcov.inv %*% xdelta))
+  # Initialize DMSO point cloud center
+  xctl <- apply(filter(xwell, x$Compound_ID == 'DMSO'), MAR=2, median)
+  qctl <- c(xcov.inv.sqrt %*% xctl)
+  
+  # Compute mahalanobis distance
+  well.dist <- sqrt(colMeans((t(qwell) - qctl) ^ 2))
   
   # Generate null distribution of maximum distance DMSO to DMSO center
-  null <- generate_null(x, xcov.inv, null_summary=null_summary, n.core=n.core)
+  null <- well.dist[x$Compound_ID == 'DMSO']
+  null.thresh <- null_summary(null)
   
-  # Normalize relative to control
-  xdist <- data.frame(Dist=well.dist) %>%
-    mutate(DistNorm=Dist / mean(null)) %>%
-    mutate(pval=sapply(Dist, function(d) mean(null > d)))
-  
+  xdist <- data.frame(Dist=well.dist) %>% mutate(DistNorm=Dist / null.thresh)
   xmeta <- dplyr::select(x, !matches('(^PC|^nonborder)'))
+  
   return(cbind(xdist, xmeta))
 }
 
-generate_null <- function(x, xcov.inv, null_summary, n.samples=100, n.core=1) {
-  # Wrapper function for generating null distributions through subsampling
-  null.dist <- mclapply(1:n.samples, function(i) {
-    set.seed(i)
-    return(generate_null_(x, xcov.inv, null_summary))
-  }, mc.cores=n.core)
+
+null_dist <- function(x, xcov.inv.sqrt) {
+  # Wrapper function to compute null distribution of DMSO to centroid distances
   
-  return(unlist(null.dist))
+  # Feature-center data
+  center <- function(z) z - mean(z)
+  features <- '(^PC|^nonborder)'
+  xwell <- select(x, matches(features))
+  
+  # Transform through inverse sqrt covariance
+  qwell <- as.matrix(xwell) %*% xcov.inv.sqrt
+  
+  # Initialize DMSO point cloud center
+  xctl <- apply(filter(xwell, x$Compound_ID == 'DMSO'), MAR=2, median)
+  qctl <- c(xcov.inv.sqrt %*% xctl)
+  
+  # Compute mahalanobis distance
+  well.dist <- sqrt(colMeans((t(qwell) - qctl) ^ 2))
+  return(well.dist[x$Compound_ID == 'DMSO'])
 }
 
-generate_null_ <- function(x, xcov.inv, null_summary) {
-  # Generate single instance of DMSO self-distance from subsample
-  features <- '(^PC|^nonborder)'
-  xwell <- sample_frac(x, 2/3) %>%
-    filter(Compound_ID == 'DMSO') %>% 
-    select(matches(features))
-  
-  xctl <- colMeans(xwell)
-  
-  # Compute malhalanobis distance
-  xdelta <- t(xwell) - xctl
-  xdist <- sqrt(diag(t(xdelta) %*% xcov.inv %*% xdelta))
-  
-  return(null_summary(xdist))
-}
 
 ################################################################################
 # Plotting utilities

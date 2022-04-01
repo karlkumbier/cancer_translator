@@ -15,7 +15,7 @@ library(ggsci)
 col.pal <- RColorBrewer::brewer.pal(11, 'RdYlBu')
 col.pal[6] <- '#FFFFFF'
 
-intensity.normalize <- TRUE
+intensity.normalize <- FALSE
 n.core <- 6
 ks.thresh <- 0.3
 
