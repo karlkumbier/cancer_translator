@@ -19,53 +19,6 @@ theme_set(
 )
 
 ################################################################################
-# Initialize utility functions used for data processing/analysis
-################################################################################
-select_category <- function(x) {
-  # Select majority value from vector of categories
-  x <- na.omit(x)
-  if (length(x) == 0) return(NA)
-  xtab <- table(x)
-  return(names(xtab)[which.max(xtab)])
-}
-
-count_categories <- function(x) {
-  # Count number of unique values in vector of categories
-  x <- na.omit(x)
-  return(length(unique(x)))
-}
-
-opt_bioactive <- function(x, categories, weights, k=1) {
-  # Evaluate cell line sets with optimal bioactivity
-  
-  # Initialize cell line combinations of size k
-  cell.combs <- combn(rownames(x), k, simplify=FALSE)
-  
-  # Compute proportion of bioactivity within each compound category
-  unq.category <- unique(categories)
-  unq.category <- unq.category[unq.category != '']
-  
-  bioactive.cat <- lapply(cell.combs, function(cl) {
-    sapply(unq.category, function(ct) {
-      mean(colSums(x[cl, categories == ct, drop=FALSE]) > 0)
-    })
-  })
-  
-  # Filter DMSO from weight vector
-  weights <- weights[names(weights) != '']
-  
-  # Compute weighted bioactivity
-  bioactive.score <- sapply(bioactive.cat, function(z) {
-    sum(z[names(weights)] * c(weights)) / sum(weights)
-  })
-
-  names(bioactive.score) <- sapply(cell.combs, str_c, collapse=', ')
-  opt <- bioactive.score[which.max(bioactive.score)]
-  return(list(opt=opt, score=bioactive.score))
-}
-
-
-################################################################################
 # Analysis parameters
 ################################################################################
 # Initialize analysis parameters
@@ -96,16 +49,10 @@ output.dir <- 'results/cell_line/'
 dir.create(output.dir, showWarnings=FALSE)
 output.file <- str_c(output.dir, 'bioactivity.Rdata') 
 
-# Initialize plate x cell line key
-plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
-
 # Clean compound categories, taking maximum vote across replicates
 x <- group_by(x, Compound_ID) %>%
   mutate(Compound_Category=select_category(Compound_Category)) %>%
   ungroup()
-
-# Initialize # of cell lines
-n.cell.line <- length(unique(x$Cell_Line))
 
 # Filter to compound/dose combinations evaluated in all cell lines
 x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
@@ -120,26 +67,26 @@ x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
   filter(!is.na(Compound_Usage)) %>%
   dplyr::select(-Compound_Category)
 
-################################################################################
-# Load compound category labels
-################################################################################
 # Load compound target table
 x.target <- 'data/Bioactivity_broad_label/' %>%
   str_c('bioactivity_broad_institute_label_20220108.csv') %>%
   fread() %>%
   dplyr::select(Compound_ID, MOA_broad_institute, Target_broad_institute) %>%
   distinct() %>%
-  dplyr::rename(Compound_Category=MOA_broad_institute) 
+  dplyr::rename(Compound_Category=MOA_broad_institute)
 
 x <- left_join(x, x.target, by='Compound_ID')
 
-xreference <- filter(x, Compound_Usage == 'reference_cpd') %>%
-  select(Compound_Usage, Compound_Category) %>%
-  filter(Compound_Category != '')
+# Initialize # of cell lines
+n.cell.line <- length(unique(x$Cell_Line))
 
-################################################################################
-# Category analysis
-################################################################################
+# Initialize plate x cell line key
+plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
+
+#' # Category summary
+#' Figures below summarize compound counts by category across the full compound 
+#' library as well as categories with the largest number of compounds 
+#' represented.
 #+ count_summaries, fig.height=8, fig.width=12
 xcat.tab <- filter(x, !is.na(Compound_Category)) %>%
   filter(Compound_Category != '') %>%
@@ -164,7 +111,7 @@ xcat.tab.top %>%
   geom_bar(stat='identity', position=position_dodge(preserve="single")) +
   geom_text(aes(label=Count), nudge_y=0.025) +
   theme(axis.text.x=element_text(angle=90)) +
-  ggtitle('Compounds per category counts', str_c('top ', nrow(xcat.tab.top), ' categories')) +
+  ggtitle('Compounds per category counts', str_c('top categories')) +
   scale_y_log10()
 
 #' # Overview
@@ -192,70 +139,39 @@ xcat.tab.top %>%
 #+ bioactivity, fig.height=8, fig.width=14, echo=FALSE
 
 # Mean-center features by cell line for subsetquent
-center <- function(z) z - mean(z)
+x <- correlation_weight(x)
+colnames(x)[20:21] <- c('non..UMAP1', 'non..UMAP2')
 
-xfeat <- dplyr::select(x, matches('(^non|Cell_Line)')) %>%
-  group_by(Cell_Line) %>%
-  mutate_if(is.numeric, center) %>%
-  ungroup()
-
-# Weight features proportional to sum absolute correlation
-x <- lapply(unique(x$Cell_Line), function(cl) {
-  
-  # Compute feature correlation
-  xfeat.c <- filter(xfeat, Cell_Line == cl) %>% dplyr::select(-Cell_Line)
-  xnfeat.c <- filter(x, Cell_Line == cl) %>% dplyr::select(-matches('(^non)'))
-  xcor <- cor(xfeat.c)
-  
-  # Compute feature weight
-  xcor.wt <- rowSums(1 - abs(xcor))
-  xcor.wt <- xcor.wt / max(xcor.wt)
-  
-  # Weight features
-  xfeat.c <- data.frame(t(t(xfeat.c) * xcor.wt))
-  return(cbind(xnfeat.c, xfeat.c))
-})
-
-x <- rbindlist(x)
   
 ################################################################################
 # Initialize parameters for bioactivity analysis
 ################################################################################
 # Initialize DMSO distance summary function
 null_summary <- function(x) {
- iqr.thresh <- 1.5 * IQR(x)
+ iqr.thresh <- IQR(x) #1.5 * IQR(x)
  return(max(x[x < median(x) + iqr.thresh]))
 }
-
-# Compute root-inverse covariance matrix by cell line
-xcov.inv.sqrt <- lapply(unique(x$Cell_Line), function(cl) {
-  # Initialize cell line feature matrix
-  features <- '(^nonborder)'
-  xfeat <- filter(x, Cell_Line == cl) %>% select(matches(features))
-    
-  # Compute inverse sqrt covariance
-  xcov.inv <- solve(cov(xfeat))
-  svds <- svd(xcov.inv)
-  return(diag(ncol(xfeat)))
-  #return(svds$u %*% diag(sqrt(svds$d)) %*% t(svds$u))
-})
-
-names(xcov.inv.sqrt) <- unique(x$Cell_Line)
 
 ################################################################################
 # Summarize null distribution
 ################################################################################
 xnull <- lapply(unique(x$PlateID), function(p) {
   out <- filter(x, PlateID == p) %>% dplyr::select(-matches('^PC'))
-  xcov.inv.sqrt.p <- xcov.inv.sqrt[[out$Cell_Line[1]]]
-  return(null_dist(out, xcov.inv.sqrt.p))
+  return(null_dist(out))
 })
+
+xthresh <- reshape2::melt(xnull) %>%
+  group_by(L1) %>%
+  summarize(value=null_summary(value)) %>%
+  mutate(PlateID=unique(x$PlateID)[L1]) %>%
+  left_join(plate.key, by='PlateID')
 
 reshape2::melt(xnull) %>%
   mutate(PlateID=unique(x$PlateID)[L1]) %>%
   left_join(plate.key, by='PlateID') %>%
   ggplot(aes(x=reorder(PlateID, value), y=value, fill=Cell_Line, col=Cell_Line)) +
   geom_boxplot(alpha=0.6) +
+  geom_point(data=xthresh, shape=8) +
   theme(axis.text.x=element_blank()) +
   scale_fill_nejm() +
   scale_color_nejm() +
@@ -270,8 +186,7 @@ reshape2::melt(xnull) %>%
 ################################################################################
 xdist <- lapply(unique(x$PlateID), function(p) {
   out <- filter(x, PlateID == p) %>% dplyr::select(-matches('^PC'))
-  xcov.inv.sqrt.p <- xcov.inv.sqrt[[out$Cell_Line[1]]]
-  return(bioactivity(out, xcov.inv.sqrt.p, null_summary))
+  return(bioactivity(out, null_summary))
 })
 
 names(xdist) <- unique(x$PlateID)
@@ -302,8 +217,12 @@ xumap <- lapply(unique(x$Cell_Line), function(cl) {
   
   # Compute pairwise mahalanobis distances
   xp <- filter(x, Cell_Line == cl)
-  xp.feat <- dplyr::select(xp, matches('^nonborder'))
-
+  xp.feat <- dplyr::select(xp, matches('^non')) %>%
+    mutate(ID=str_c(xp$PlateID, '_', xp$WellID)) %>%
+    left_join(xdist.merge, by='ID') 
+  
+  return(xp.feat)
+  
   # Filter outliers
   umap.config <- umap.defaults
   xumap <- umap(xp.feat, config=umap.config)
@@ -315,18 +234,17 @@ xumap <- lapply(unique(x$Cell_Line), function(cl) {
 })
 
 rbindlist(xumap) %>%
-  mutate(Group=ifelse(Compound_ID == 'DMSO', 'DMSO', 'inactive')) %>%
-  mutate(Group=ifelse(DistNorm > 1, 'bioactive', Group)) %>%
-  mutate(Group=factor(Group, levels=c('DMSO', 'bioactive', 'inactive'))) %>%
+  mutate(Group=ifelse(Compound_ID == 'DMSO', 'DMSO', 'Non-bioactive')) %>%
+  mutate(Group=ifelse(DistNorm > 1, 'Bioactive', Group)) %>%
+  mutate(Group=factor(Group, levels=c('DMSO', 'Bioactive', 'Non-bioactive'))) %>%
   mutate(DistNorm=ifelse(Compound_ID == 'DMSO', NA, DistNorm)) %>%
   sample_frac(0.2) %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose)) | Compound_ID == 'DMSO') %>%
-  ggplot(aes(x=UMAP1, y=UMAP2, col=Group)) +
+  ggplot(aes(x=`non..UMAP1.x`, y=`non..UMAP2.x`, col=Group)) +
   geom_jitter(height=0.25, width=0.25, alpha=0.5) +
   facet_wrap(~Cell_Line) +
   scale_color_jama()
-
 
 #' ### Fig 1b. Bioactivity by cell line. 
 #' Bioactivity calls by compound, cell line. Compounds with p-value = 0 are 
@@ -380,15 +298,14 @@ superheat(
 
 #' ### Fig 1c. Bioactivity by cell line, compound category.
 #' Bioactivity calls by cell line, compound category. Treatments (compound dose 
-#' pairs) with p-value = 0 are defined as bioactive, while treatments with 
-#' p-value < 0 are defined as inactive. Top: bioactivity calls for each 
-#' treatment, bottom: proportion of bioactivity calls within each compound 
-#' category. Compound categories with fewer than `R min.cat` treatments are 
-#' dropped for visualization.
+#' pairs) with normalized distance from centroid > 1 are defined as bioactive, 
+#' while remaining treatments are defined as non-bionactive. Top: bioactivity 
+#' calls for each treatment, bottom: proportion of bioactivity calls within each 
+#' compound category. Compound categories with fewer than `R min.cat` treatments 
+#' are dropped for visualization.
 #' 
-#' **Note:** treatment replicates are grouped and p-values averaged before 
-#' calling bioactivity. Thus, bioactive treatments correspond to those with 
-#' p-value = 0 across all replicates.
+#' **Note:** treatment replicates are grouped and distances averaged before 
+#' calling bioactivity.
 #+ bioactivity_category, fig.height=12, fig.width=18, warning=FALSE
 # Plot bioactivity by cell line, compound category
 cat.keep <- filter(xcat.tab, Count >= 10)$Compound_Category
@@ -401,7 +318,7 @@ xplot.cat <- sapply(cat.keep, function(ctg) {
 xplot.cat <- xplot.cat[,order(colMeans(xplot.cat))]
 col.order <- order(xplot.cat[head(bioactive.order, 1),])
 n.compounds <- xcat.tab.top$Count
-colnames(xplot.cat) <- str_replace_all(colnames(xplot.cat), ',', ',\n')
+colnames(xplot.cat) <- str_remove_all(colnames(xplot.cat), ',.*$')
 
 superheat(
   xplot.cat[bioactive.order, col.order],
