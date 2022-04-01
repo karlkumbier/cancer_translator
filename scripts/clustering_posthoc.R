@@ -30,7 +30,7 @@ x.cluster <- lapply(files, function(f) {
 })
 
 x.cluster.full <- rbindlist(x.cluster) %>%
-  mutate(Loss=(Silhouette * Prec * Rec) ^ (1/3))
+  mutate(Loss=((Silhouette > 0) * Prec * Rec) ^ (1/2))
 
 x.cluster <- group_by(x.cluster.full, CellLine, Compound_Category) %>%
   summarize(Silhouette=max(Silhouette), Prec=max(Prec), Rec=max(Rec), Loss=max(Loss)) %>%
@@ -57,7 +57,7 @@ rownames(xplot) <- cell.lines
 
 avg.loss <- rowMeans(xplot)
 max.loss <- apply(xplot, MAR=2, max)
-xplot <- xplot[,max.loss > (0.05) ^ (1 / 3)]
+xplot <- xplot[,max.loss > (0.25) ^ (1 / 2)]
 
 row.order <- sort(avg.loss, decreasing=TRUE) %>% names
 
