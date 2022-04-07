@@ -8,12 +8,17 @@ library(ggsci)
 library(patchwork)
 library(hrbrthemes)
 library(umap)
+library(readr)
+library(see)
+library(twosamples)
+
 
 theme_set(
   theme_ipsum(
     axis_title_size=18, 
     strip_text_size=18, 
     axis_text_size=14,
+    base_size=18, 
     base_family='sans'
   )
 )
@@ -22,10 +27,11 @@ theme_set(
 # Analysis parameters
 ################################################################################
 # Initialize analysis parameters
-intensity.normalize <- FALSE
+intensity.normalize <- TRUE
 n.core <- 16
 min.cat <- 5
 n.subsample <- 100
+save.fig <- TRUE
 
 # Initialize color palettes
 heat.pal <- viridis::viridis(10)
@@ -44,13 +50,19 @@ data.dir <- 'data/screens/LH_CDC_1/'
 load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
 x <- dplyr::select(x, -matches('^PC'))
 
-# initialize output directories
+# Initialize # of cell lines
+n.cell.line <- length(unique(x$Cell_Line))
+
+# Initialize output directories
 output.dir <- 'results/cell_line/'
+fig.dir <- 'results/figures/fig1/'
+
 dir.create(output.dir, showWarnings=FALSE)
 output.file <- str_c(output.dir, 'bioactivity.Rdata') 
 
 # Clean compound categories, taking maximum vote across replicates
 x <- group_by(x, Compound_ID) %>%
+  mutate(Dose=as.numeric(Dose)) %>%
   mutate(Compound_Category=select_category(Compound_Category)) %>%
   ungroup()
 
@@ -77,9 +89,6 @@ x.target <- 'data/Bioactivity_broad_label/' %>%
 
 x <- left_join(x, x.target, by='Compound_ID')
 
-# Initialize # of cell lines
-n.cell.line <- length(unique(x$Cell_Line))
-
 # Initialize plate x cell line key
 plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
 
@@ -89,21 +98,21 @@ plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
 #' represented.
 #+ count_summaries, fig.height=8, fig.width=12
 xcat.tab <- filter(x, !is.na(Compound_Category)) %>%
-  filter(Compound_Category != '') %>%
   dplyr::select(Compound_ID, Compound_Category) %>%
   distinct() %>%
   group_by(Compound_Category) %>%
   summarize(Count=n())
 
 filter(xcat.tab, Count > 1) %>%
+  filter(Compound_Category != '') %>%
   ggplot(aes(x=Count)) +
   geom_histogram() +
   ggtitle('Distribution of compound counts per category') +
   xlab('# compounds') +
-  theme(tex=element_text(size=24))
+  theme(text=element_text(size=24))
 
 # Summarize prevalent compound categories
-xcat.tab.top <- filter(xcat.tab, Count >= min.cat)
+xcat.tab.top <- filter(xcat.tab, Count >= min.cat, Compound_Category != '')
 cat.keep <- xcat.tab.top$Compound_Category
 
 xcat.tab.top %>%
@@ -113,6 +122,17 @@ xcat.tab.top %>%
   theme(axis.text.x=element_text(angle=90)) +
   ggtitle('Compounds per category counts', str_c('top categories')) +
   scale_y_log10()
+
+# Write table for supplement
+category.table <- dplyr::select(x, Compound_ID, Compound_Category, Dose, Cell_Line) %>%
+  dplyr::rename(MOA=Compound_Category) %>%
+  group_by(Compound_ID, MOA, Dose) %>%
+  summarize(N_Cell_Line=length(unique(Cell_Line))) %>%
+  mutate(MOA=str_replace_all(MOA, ',', ';')) %>%
+  arrange(Compound_ID)
+
+fout <- str_c(output.dir, 'compound_library.csv')
+write_excel_csv(file=fout, x=category.table)
 
 #' # Overview
 #' This notebook considers the problems of bioactivity detection based on 
@@ -125,7 +145,7 @@ xcat.tab.top %>%
 #' across each DMSO well).
 #' 2. Generate a null distribution corresponding to the weighted l2 distance 
 #' between each DMSO well and the DMSO point cloud center. 
-#' 3. Define bioactivity as any well that is further than 1.5 IQR from the 
+#' 3. Define bioactivity as any well that is further than 1 IQR from the 
 #' DMSO centroid
 #' 
 #' 
@@ -139,16 +159,14 @@ xcat.tab.top %>%
 #+ bioactivity, fig.height=8, fig.width=14, echo=FALSE
 
 # Mean-center features by cell line for subsetquent
-x <- correlation_weight(x)
-colnames(x)[20:21] <- c('non..UMAP1', 'non..UMAP2')
-
+x <- correlation_weight(x, normalize=TRUE)
   
 ################################################################################
 # Initialize parameters for bioactivity analysis
 ################################################################################
 # Initialize DMSO distance summary function
 null_summary <- function(x) {
- iqr.thresh <- IQR(x) #1.5 * IQR(x)
+ iqr.thresh <- IQR(x)
  return(max(x[x < median(x) + iqr.thresh]))
 }
 
@@ -202,6 +220,17 @@ rbindlist(xdist) %>%
   facet_wrap(~Cell_Line, scales='free_x') +
   ylab('Distance from DMSO centroid')
 
+rbindlist(xdist) %>%
+  mutate(Type=ifelse(Compound_ID == 'DMSO', 'DMSO', 'Other')) %>%
+  ggplot(aes(x=reorder(Cell_Line, DistNorm), y=DistNorm)) +
+  geom_violinhalf(scale='width', aes(fill=Type, color=Type)) +
+  xlab(NULL) +
+  scale_fill_d3(name='') +
+  scale_color_d3(name='') +
+  ylab('Distance from DMSO centroid') +
+  theme(legend.position=c(0.1, 0.9))
+
+
 #' ### Fig 1a UMAP projection by cell line
 #' UMAP projections of phenotypic profiles by cell line. Points colored dark 
 #' blue represent DMSO-treated wells. Points colored orange and light blue 
@@ -215,13 +244,9 @@ xumap <- lapply(unique(x$Cell_Line), function(cl) {
     filter(Cell_Line == cl) %>%
     mutate(ID=str_c(PlateID, '_', WellID))
   
-  # Compute pairwise mahalanobis distances
+  # Compute pairwise distances
   xp <- filter(x, Cell_Line == cl)
-  xp.feat <- dplyr::select(xp, matches('^non')) %>%
-    mutate(ID=str_c(xp$PlateID, '_', xp$WellID)) %>%
-    left_join(xdist.merge, by='ID') 
-  
-  return(xp.feat)
+  xp.feat <- dplyr::select(xp, matches('^non')) 
   
   # Filter outliers
   umap.config <- umap.defaults
@@ -230,21 +255,49 @@ xumap <- lapply(unique(x$Cell_Line), function(cl) {
   
   out <- data.frame(xumap$layout) %>% 
     mutate(ID=str_c(xp$PlateID, '_', xp$WellID)) %>%
-    left_join(xdist.merge, by='ID') 
+    left_join(xdist.merge, by='ID')
+  
+  return(out)
 })
 
 rbindlist(xumap) %>%
+  filter(Compound_ID == 'DMSO') %>%
+  group_by(Compound_ID) %>%
+  mutate(ColID=as.factor(ColID)) %>%
+  ggplot(aes(x=UMAP1, y=UMAP2, col=ColID)) +
+  geom_jitter(height=0.25, width=0.25, alpha=0.5) +
+  facet_wrap(~Cell_Line) +
+  scale_color_nejm() +
+  theme(legend.position='none')
+
+p <- rbindlist(xumap) %>%
   mutate(Group=ifelse(Compound_ID == 'DMSO', 'DMSO', 'Non-bioactive')) %>%
   mutate(Group=ifelse(DistNorm > 1, 'Bioactive', Group)) %>%
   mutate(Group=factor(Group, levels=c('DMSO', 'Bioactive', 'Non-bioactive'))) %>%
   mutate(DistNorm=ifelse(Compound_ID == 'DMSO', NA, DistNorm)) %>%
-  sample_frac(0.2) %>%
+  filter(Cell_Line %in% c('OVCAR4', 'HEPG2')) %>%
+  mutate(Compound_Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Compound_Category)) %>%
+  filter(!is.na(Compound_Category)) %>%
+  mutate(Shape=Compound_Category == 'glucocorticoid receptor agonist') %>%
+  mutate(Size=ifelse(Shape, 1, 0.75)) %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose)) | Compound_ID == 'DMSO') %>%
-  ggplot(aes(x=`non..UMAP1.x`, y=`non..UMAP2.x`, col=Group)) +
-  geom_jitter(height=0.25, width=0.25, alpha=0.5) +
-  facet_wrap(~Cell_Line) +
-  scale_color_jama()
+  ggplot(aes(x=UMAP1, y=UMAP2, col=Group, shape=Shape, size=Size, alpha=Size)) +
+  geom_jitter(height=0.05, width=0.05) +
+  facet_wrap(~Cell_Line, ncol=1) +
+  scale_color_jama() +
+  labs(col=NULL) +
+  scale_shape_manual(breaks=c('TRUE', 'FALSE'), values=c(8, 20)) +
+  scale_alpha(range=c(0.3, 1)) +
+  scale_size(range=c(1, 1.5)) +
+  guides(shape='none') +
+  guides(size='none') +
+  guides(alpha='none') +
+  theme(legend.position=c(0.15, 0.95))
+
+if (save.fig) pdf(str_c(fig.dir, 'umap.pdf'), height=12, width=8)
+plot(p)  
+if(save.fig) dev.off()
 
 #' ### Fig 1b. Bioactivity by cell line. 
 #' Bioactivity calls by compound, cell line. Compounds with p-value = 0 are 
@@ -256,14 +309,94 @@ rbindlist(xumap) %>%
 #' those with p-value = 0 across all replicates.
 #+ bioactivity_p, fig.height=12, fig.width=18
 # Group bioactivity scores by treatment, cell line, usage
+xdmso <- rbindlist(xdist) %>%
+  filter(Compound_ID == 'DMSO') %>%
+  mutate(Compound_Category='DMSO') %>%
+  dplyr::select(Cell_Line, Compound_ID, Compound_Category, DistNorm)
+
 xgroup <- rbindlist(xdist) %>%
+  filter(Compound_ID != 'DMSO') %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
   ungroup() %>%
   group_by(Cell_Line, Compound_ID, Compound_Category) %>% 
-  summarize(DistNorm=mean(DistNorm), Dist=mean(Dist), .groups='drop') %>%
-  arrange(Compound_ID, Cell_Line) 
+  summarize(DistNorm=mean(DistNorm), .groups='drop') %>%
+  arrange(Compound_ID, Cell_Line)
   
+
+rbind(xdmso, xgroup) %>%
+  mutate(Type=ifelse(Compound_ID == 'DMSO', 'DMSO', 'Other')) %>%
+  ggplot(aes(x=DistNorm)) +
+  geom_density(aes(fill=Type, color=Type), alpha=0.5) +
+  scale_fill_d3(name='') +
+  scale_color_d3(name='') +
+  xlab('Distance from DMSO centroid') +
+  ylab(NULL) +
+  facet_wrap(~Cell_Line) +
+  theme(legend.position=c(0.9, 0.9))
+
+#' # Stability analysis on distributions
+#' We compute the difference in these ECDF using signed CVM. We resample 
+#' compounds with probability proortional to given weight — for prioritizing MOA.
+xmerge <- rbind(xdmso, xgroup)
+
+bootstrap_bioactive_difference <- function(x, wt, nbs=5) {
+  # Compute bioactive difference by cell line
+  bdiff <- replicate(nbs, bioactive_difference(bootstrap_compounds(x, wt)))
+  # Question: how do distinct/non-distinct values vary?
+}
+
+bioactive_difference <- function(x) {
+  # Compute bioactive difference by cell line
+  cell.lines <- unique(x$Cell_Line)
+  distance <- sapply(cell.lines, function(cl) {
+    xcl <- filter(x, Cell_Line == cl)
+    id.dmso <- xcl$Compound_ID == 'DMSO'
+    cvm_stat(xcl$DistNorm[id.dmso], xcl$DistNorm[!id.dmso], power=1)
+  })
+}
+
+bootstrap_compounds <- function(x, wt) {
+  # Weighted bootstrap sample of compounds, weights = MOA sampling probability
+  xf <- filter(x, Compound_ID != 'DMSO')
+  xdmso <- filter(x, Compound_ID == 'DMSO')
+  
+  n <- nrow(xf) / length(unique(xf$Cell_Line))
+  wt <- wt / sum(wt)
+  
+  # Initialize ID by category table
+  xcat.tab <- dplyr::select(xf, Compound_ID, Compound_Category) %>% distinct()
+  
+  id.bs.sample <- lapply(names(wt), function(ctg) {
+    filter(xcat.tab, Compound_Category == ctg) %>% 
+      sample_n(wt[ctg] * n, replace=TRUE) %>%
+      dplyr::select(Compound_ID) %>%
+      unlist()
+  })
+  
+  id.bs.sample <- unlist(id.bs.sample) %>% unname
+  
+  # Initialize bootstrap sampled data table
+  x.bs.sample <- lapply(unique(xf$Cell_Line), function(cl) {
+    xfc <- filter(xf, Cell_Line == cl)
+    return(xfc[fastmatch::fmatch(id.bs.sample, xfc$Compound_ID),])
+  })
+  
+  return(rbind(rbindlist(x.bs.sample), xdmso))
+}
+
+# Explanation:
+# 1. We compute reference distributions in phenotypic space
+# 2. We score bioactivity / compound similarity relative to different reference 
+#   distributions.
+# 3. Uncertainty / stability analysis based on weighted bootstrap sampling, 
+#   weights define the priority for different MOAs
+
+# TODO (1) make this figure for Compound similarity
+# TODO (2) run stability analysis
+
+# TODO: cell line by category matrix based on distributional difference
+
 # Format cell x compound bioactivity for visualization
 xplot <- matrix(as.numeric(xgroup$DistNorm > 1), nrow=n.cell.line)
 rownames(xplot) <- unique(xgroup$Cell_Line)
@@ -309,6 +442,7 @@ superheat(
 #+ bioactivity_category, fig.height=12, fig.width=18, warning=FALSE
 # Plot bioactivity by cell line, compound category
 cat.keep <- filter(xcat.tab, Count >= 10)$Compound_Category
+cat.keep <- setdiff(cat.keep, '')
 
 xplot.cat <- sapply(cat.keep, function(ctg) {
   rowMeans(xplot[,which(category == ctg)])
@@ -380,7 +514,7 @@ xdist <- data.frame(CellSet=c(names(xdist.gen), names(xdist.spec))) %>%
   mutate(K=as.factor(K))
 
 # Plot optimal bioactivity scores
-ggplot(xdist, aes(x=K, y=Score, col=Type)) +
+p <- ggplot(xdist, aes(x=K, y=Score, col=Type)) +
   geom_boxplot(aes(fill=Type), alpha=0.7) +
   geom_point() +
   geom_point(data=xopt, shape=8, size=3) +
@@ -391,4 +525,8 @@ ggplot(xdist, aes(x=K, y=Score, col=Type)) +
   scale_color_nejm() +
   scale_fill_nejm() +
   theme(legend.position='none') +
-  facet_wrap(~Type)
+  facet_wrap(~Type, ncol=1)
+
+if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=12, width=8)
+plot(p)  
+if(save.fig) dev.off()

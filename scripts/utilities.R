@@ -1,19 +1,61 @@
 ################################################################################
 # distance functions in phenotypic space
 ################################################################################
-category_distance <- function(x, categories) {
+category_distance <- function(x, categories, summary_fun) {
   
-  dist.c <- sapply(unique(categories), function(ctg) {
-    median(dist(x[categories == ctg,]))
+  # Compute pairwise distances
+  dist.mat <- dist(x) %>% as.matrix
+  
+  # Initialize DMSO median distance
+  id.dmso <- categories == 'DMSO'
+  dmso.dist <- dist.mat[id.dmso, id.dmso]
+  dmso.dist <- dmso.dist[upper.tri(dmso.dist)]
+  
+  # Compute within category distances
+  dist.summary <- sapply(unique(categories), function(ctg) {
+    ctg.id <- categories == ctg
+    
+    # Compute within category distance distribution
+    ctg.dist <- dist.mat[ctg.id, ctg.id]
+    ctg.dist <- ctg.dist[upper.tri(ctg.dist)]
+    
+    # Compute category neighborhood distance distribution
+    nbhd.dist <- apply(dist.mat[ctg.id, ], MAR=1, function(z) sort(z))
+    nbhd.dist <- nbhd.dist[2:sum(ctg.id),]
+    
+    out.within <- summary_fun(ctg.dist, dmso.dist)
+    out.between <- summary_fun(ctg.dist, nbhd.dist)
+    return(c(out.within, out.between))
   })
   
+  out <- data.frame(t(dist.summary)) %>%
+    mutate(Category=colnames(dist.summary)) %>%
+    dplyr::rename(DistWithin=X1, DistBetween=X2)
   
+  return(out)
 }
 
+if (FALSE) {
+ecdf <- function(x) {
+  n <- length(x)
+  return(cbind(sort(x), (1:n) / n))
+}
+
+dmso.ecdf <- data.frame(ecdf(dmso.dist), Type='DMSO')
+ctg.ecdf <- data.frame(ecdf(ctg.dist), Type='Ctg')
+nbhd.ecdf <- data.frame(ecdf(nbhd.dist), Type='Nbhd')
+
+rbind(dmso.ecdf, ctg.ecdf, nbhd.ecdf) %>%
+  ggplot(aes(x=X1, y=X2, col=Type)) +
+  geom_line()
+
+cvm_stat(ctg.dist, dmso.dist, power=1)
+cvm_stat(ctg.dist, nbhd.dist, power=1)
+}
 ################################################################################
 # Feature transformation functions
 ################################################################################
-correlation_weight <- function(x) {
+correlation_weight <- function(x, normalize=FALSE) {
   
   # Apply correlation weighting within each cell line
   x <- lapply(unique(x$Cell_Line), function(cl) {
@@ -24,6 +66,10 @@ correlation_weight <- function(x) {
     xfeat <- dplyr::select(x, matches('(^non|Cell_Line)'))
     xfeat.c <- filter(xfeat, Cell_Line == cl) %>% dplyr::select(-Cell_Line)
     xnfeat.c <- filter(x, Cell_Line == cl) %>% dplyr::select(-matches('(^non)'))
+    
+    # l2 normalize features
+    l2norm <- function(z) z / sqrt(sum(z ^ 2))
+    if (normalize)  xfeat.c <- mutate_if(xfeat.c, is.numeric, center)
     
     # Center features
     xfeat.c <- mutate_if(xfeat.c, is.numeric, center)
@@ -36,9 +82,9 @@ correlation_weight <- function(x) {
     # Weight features
     xfeat.c <- data.frame(t(t(xfeat.c) * xcor.wt))
     
-    configs <- umap.defaults
-    configs$n_neighbors <- 5
-    xfeat.c <- umap(xfeat.c)$layout
+    #configs <- umap.defaults
+    #configs$n_neighbors <- 5
+    #xfeat.c <- umap(xfeat.c)$layout
     
     return(cbind(xnfeat.c, xfeat.c))
   })
@@ -165,4 +211,31 @@ opt_bioactive <- function(x, categories, weights, k=1) {
   names(bioactive.score) <- sapply(cell.combs, str_c, collapse=', ')
   opt <- bioactive.score[which.max(bioactive.score)]
   return(list(opt=opt, score=bioactive.score))
+}
+
+opt_similarity <- function(x, categories, weights, k=1) {
+  # Evaluate cell line sets with optimal similarity
+  
+  # Initialize cell line combinations of size k
+  cell.combs <- combn(rownames(x), k, simplify=FALSE)
+  
+  # Compute similarity within each compound category
+  unq.category <- unique(categories)
+  unq.category <- unq.category[unq.category != '']
+  
+  similarity.cat <- lapply(cell.combs, function(cl) {
+    cat.sim <- apply(xplot[cl,,drop=FALSE], MAR=2, max)
+  })
+  
+  # Filter DMSO from weight vector
+  weights <- weights[names(weights) != '']
+  
+  # Compute weighted similarity
+  similarity.score <- sapply(similarity.cat, function(z) {
+    sum(z[names(weights)] * c(weights)) / sum(weights)
+  })
+  
+  names(similarity.score) <- sapply(cell.combs, str_c, collapse=', ')
+  opt <- similarity.score[which.max(similarity.score)]
+  return(list(opt=opt, score=similarity.score))
 }
