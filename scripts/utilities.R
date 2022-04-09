@@ -1,58 +1,4 @@
 ################################################################################
-# distance functions in phenotypic space
-################################################################################
-category_distance <- function(x, categories, summary_fun) {
-  
-  # Compute pairwise distances
-  dist.mat <- dist(x) %>% as.matrix
-  
-  # Initialize DMSO median distance
-  id.dmso <- categories == 'DMSO'
-  dmso.dist <- dist.mat[id.dmso, id.dmso]
-  dmso.dist <- dmso.dist[upper.tri(dmso.dist)]
-  
-  # Compute within category distances
-  dist.summary <- sapply(unique(categories), function(ctg) {
-    ctg.id <- categories == ctg
-    
-    # Compute within category distance distribution
-    ctg.dist <- dist.mat[ctg.id, ctg.id]
-    ctg.dist <- ctg.dist[upper.tri(ctg.dist)]
-    
-    # Compute category neighborhood distance distribution
-    nbhd.dist <- apply(dist.mat[ctg.id, ], MAR=1, function(z) sort(z))
-    nbhd.dist <- nbhd.dist[2:sum(ctg.id),]
-    
-    out.within <- summary_fun(ctg.dist, dmso.dist)
-    out.between <- summary_fun(ctg.dist, nbhd.dist)
-    return(c(out.within, out.between))
-  })
-  
-  out <- data.frame(t(dist.summary)) %>%
-    mutate(Category=colnames(dist.summary)) %>%
-    dplyr::rename(DistWithin=X1, DistBetween=X2)
-  
-  return(out)
-}
-
-if (FALSE) {
-ecdf <- function(x) {
-  n <- length(x)
-  return(cbind(sort(x), (1:n) / n))
-}
-
-dmso.ecdf <- data.frame(ecdf(dmso.dist), Type='DMSO')
-ctg.ecdf <- data.frame(ecdf(ctg.dist), Type='Ctg')
-nbhd.ecdf <- data.frame(ecdf(nbhd.dist), Type='Nbhd')
-
-rbind(dmso.ecdf, ctg.ecdf, nbhd.ecdf) %>%
-  ggplot(aes(x=X1, y=X2, col=Type)) +
-  geom_line()
-
-cvm_stat(ctg.dist, dmso.dist, power=1)
-cvm_stat(ctg.dist, nbhd.dist, power=1)
-}
-################################################################################
 # Feature transformation functions
 ################################################################################
 correlation_weight <- function(x, normalize=FALSE) {
@@ -114,6 +60,18 @@ count_categories <- function(x) {
   return(length(unique(x)))
 }
 
+bootstrap_sample <- function(x) {
+  # Wrapper for bootstrap sampling maintaining class balance
+  xg <- data.frame(Cat=x) %>%
+    mutate(Idx=1:n()) %>%
+    group_by(Cat) %>%
+    summarize(Idx=list(Idx))
+  
+  # Note: no longer strict bootstrap due to distances for replicates
+  out <- lapply(xg$Idx, function(i) sample(i, length(i) * (2 / 3)))
+  out <- unique(unlist(out))
+  return(out)
+}
 
 ################################################################################
 # Normalization functions
@@ -140,12 +98,11 @@ intensity_normalize_ <- function(col, y) {
   return(out)
 }
 
-
 ################################################################################
 # Functions for evaluating bioactivity of compounds
 ################################################################################
-bioactivity <- function(x, null_summary=max) {
-  # Wrapper function to compute distance for each well to DMSO
+dmso_distance <- function(x, null_summary=max) {
+  # Computes distance for each well to DMSO centroid
 
   # Feature-center data
   center <- function(z) z - mean(z)
@@ -168,49 +125,118 @@ bioactivity <- function(x, null_summary=max) {
   return(cbind(xdist, xmeta))
 }
 
-null_dist <- function(x) {
-  # Wrapper function to compute null distribution of DMSO to centroid distances
+bioactive_difference <- function(x, cell.line, bootstrap=FALSE) {
+  # Compute deviation between DMSO, compound ECDFs for select cell line(s)
+  xcl <- filter(x, Cell_Line %in% cell.line)
+  if (bootstrap) xcl <- bootstrap_table(xcl)
   
-  # Feature-center data
-  center <- function(z) z - mean(z)
-  features <- '(^PC|^non)'
-  xwell <- select(x, matches(features))
+  xdmso <- filter(xcl, Compound_ID == 'DMSO')
+  xcpd <- filter(xcl, Compound_ID != 'DMSO') %>%
+    group_by(Compound_ID) %>%
+    top_n(1, DistNorm)
   
-  # Initialize DMSO point cloud center
-  xctl <- apply(filter(xwell, x$Compound_ID == 'DMSO'), MAR=2, median)
-
-  # Compute mahalanobis distance
-  well.dist <- sqrt(colMeans((t(xwell) - xctl) ^ 2))
-  return(well.dist[x$Compound_ID == 'DMSO'])
+  return(cvm_stat(xdmso$DistNorm, xcpd$DistNorm, power=1))
 }
 
-opt_bioactive <- function(x, categories, weights, k=1) {
-  # Evaluate cell line sets with optimal bioactivity
-  
-  # Initialize cell line combinations of size k
-  cell.combs <- combn(rownames(x), k, simplify=FALSE)
-  
-  # Compute proportion of bioactivity within each compound category
-  unq.category <- unique(categories)
-  unq.category <- unq.category[unq.category != '']
-  
-  bioactive.cat <- lapply(cell.combs, function(cl) {
-    sapply(unq.category, function(ct) {
-      mean(colSums(x[cl, categories == ct, drop=FALSE]) > 0)
-    })
+bioactive_difference_ctg <- function(x, cell.lines, categories, bootstrap=FALSE) {
+  # Compute deviation between DMSO, category ECDFs for select cell line(s)
+  out <- sapply(categories, function(ctg) {
+    sapply(cell.lines, function(cl) {
+      xctg <- filter(x, Compound_Category %in% c(ctg, 'DMSO'))
+      bioactive_difference(xctg, cl, bootstrap)
+    }) 
   })
   
-  # Filter DMSO from weight vector
-  weights <- weights[names(weights) != '']
+  return(out)
+}
+
+score_bioactive <- function(x, weights) {
+  # Evaluate weighted bioactivity score by cell line set
+  x <- x[,names(weights)]
+  stopifnot(ncol(x) == length(weights))
+  score <- colSums(t(x) * weights) / sum(weights)
+  return(return(score))
+}
+
+bootstrap_table <- function(x) {
+  # Bootstrap sample table maintaining DMSO/cpd balance
+  #xdmso <- filter(x, Compound_ID == 'DMSO')
+  #xdmso <- slice_sample(xdmso, n=nrow(xdmso), replace=TRUE)
+  #xcpd <- filter(x, Compound_ID != 'DMSO')
+  #xcpd <- slice_sample(xcpd, n=nrow(xcpd), replace=TRUE)
   
-  # Compute weighted bioactivity
-  bioactive.score <- sapply(bioactive.cat, function(z) {
-    sum(z[names(weights)] * c(weights)) / sum(weights)
+  # Add epsilon noise to deal with duplicate samples
+  eps <- rnorm(nrow(x), sd=1e-10)
+  id.bootstrap <- bootstrap_sample(x$Category)
+  out <- x[id.bootstrap,]# %>% mutate(DistNorm=DistNorm + eps)
+    #slice_sample(x, n=nrow(x), replace=TRUE) %>% 
+    #mutate(DistNorm=DistNorm + eps)
+  
+  return(out)
+}
+
+################################################################################
+# Functions for evaluating compound similarity
+################################################################################
+category_distance <- function(x, categories, summary_fun, dist.mat=NULL, bootstrap=FALSE) {
+  
+  # Compute pairwise distances
+  if (is.null(dist.mat)) dist.mat <- dist(x) %>% as.matrix
+  
+  # Take bootstrap sample
+  if (bootstrap) id.bootstrap <- bootstrap_sample(categories)
+  
+  # Initialize DMSO median distance
+  id.dmso <- which(categories == 'DMSO')
+  if (bootstrap) id.dmso <- id.bootstrap[id.bootstrap %in% id.dmso]
+  dmso.dist <- dist.mat[id.dmso, id.dmso]
+  dmso.dist <- dmso.dist[upper.tri(dmso.dist)]
+  
+  # Add epsilon noise if bootstrapping
+  #if (bootstrap) {
+  #  eps <- rnorm(length(dmso.dist), sd=1e-10)
+  #  dmso.dist <- dmso.dist + eps
+  #}
+
+  # Compute within category distances
+  dist.summary <- sapply(unique(categories), function(ctg) {
+    # Compute within category distance distribution
+    id.ctg <- which(categories == ctg)
+    if (bootstrap) id.ctg <- id.bootstrap[id.bootstrap %in% id.ctg]
+    ctg.dist <- dist.mat[id.ctg, id.ctg]
+    ctg.dist <- ctg.dist[upper.tri(ctg.dist)]
+    
+    # Add epsilon noise if bootstrapping
+    #if (bootstrap) {
+    #  eps <- rnorm(length(ctg.dist), sd=1e-10)
+    #  ctg.dist <- ctg.dist + eps
+    #}
+    
+    # Compute category neighborhood distance distribution
+    if (bootstrap) dist.mat <- dist.mat[,unique(id.bootstrap)]
+    nbhd.dist <- apply(dist.mat[id.ctg, ], MAR=1, function(z) sort(z))
+    nbhd.dist <- nbhd.dist[2:length(unique(id.ctg)),]
+    
+    out.within <- summary_fun(ctg.dist, dmso.dist)
+    out.between <- summary_fun(ctg.dist, nbhd.dist)
+    return(c(out.within, out.between))
   })
   
-  names(bioactive.score) <- sapply(cell.combs, str_c, collapse=', ')
-  opt <- bioactive.score[which.max(bioactive.score)]
-  return(list(opt=opt, score=bioactive.score))
+  out <- data.frame(t(dist.summary)) %>%
+    mutate(Category=colnames(dist.summary)) %>%
+    dplyr::rename(DistWithin=X1, DistBetween=X2)
+  
+  return(out)
+}
+
+aggregate_similarity <- function(x, cell.lines) {
+  # Aggregate as max similarity across cell lines
+  out <- filter(x, Cell_Line %in% cell.lines) %>%
+    group_by(Category) %>%
+    summarize(DistWithin=max(DistWithin), DistBetween=max(DistBetween)) %>%
+    mutate(Cell_Set=str_c(cell.lines, collapse=', '))
+  
+  return(out)
 }
 
 opt_similarity <- function(x, categories, weights, k=1) {

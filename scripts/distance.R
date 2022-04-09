@@ -5,9 +5,9 @@ library(tidytext)
 library(parallel)
 library(superheat)
 library(ggsci)
+library(RColorBrewer)
 library(patchwork)
 library(hrbrthemes)
-library(dbscan)
 library(umap)
 library(rprofiler)
 library(twosamples)
@@ -29,12 +29,25 @@ theme_set(
 intensity.normalize <- TRUE
 n.core <- 16
 min.cat <- 5
-pval.thresh <- 0
 ncell.thresh <- 50
+n.bootstrap <- 25
+umap.cell <- 'A549'
 save.fig <- TRUE
 
-# Initialize clustering parameters
-#cell.line <- 'OVCAR4'
+# Visualization parameters
+heat.pal <- viridis::viridis(10)
+heat.pal <- brewer.pal(9, 'RdBu')
+thresh.plot <- 0.3
+
+# Function for normalizing distances within plate relative to DMSO + 
+# thresholding bioactive/inactive compounds
+null_summary <- function(x) {
+  iqr.thresh <- IQR(x)
+  return(max(x[x < median(x) + iqr.thresh]))
+}
+
+# Function for comparing ECDFs
+summary_fun <- function(x, y) cvm_stat(x, y, power=1)
 
 ################################################################################
 # Load dataset
@@ -83,22 +96,8 @@ x.target <- 'data/Bioactivity_broad_label/' %>%
 
 # Merge Broad MOA labels
 x <- left_join(x, x.target, by='Compound_ID') %>%
-  mutate(Category=ifelse(Category == '', Category_Vendor, Category)) %>%
+  #mutate(Category=ifelse(Category == '', Category_Vendor, Category)) %>%
   mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
-  
-
-# Replace missing categories with vendor labels
-xcat.tab <- filter(x, !is.na(Category)) %>%
-  filter(Category != '') %>%
-  dplyr::select(Compound_ID, Category) %>%
-  distinct() %>%
-  group_by(Category) %>%
-  summarize(Count=n())
-
-# Initialize reference set compounds
-x.reference <- filter(x, Compound_Usage == 'reference_cpd')
-x.reference.group <- group_by(x.reference, Category) %>%
-  summarize(Compound_ID=list(Compound_ID))
 
 #' # Overview
 #' This notebook considers the problem of compound similarity based on 
@@ -110,23 +109,17 @@ x.reference.group <- group_by(x.reference, Category) %>%
 # Mean-center + correlation weight features by cell line for subsequent analysis
 x <- correlation_weight(x, TRUE)
 
-################################################################################
-# Initialize parameters for bioactivity analysis
-################################################################################
-# Initialize DMSO distance summary function
-null_summary <- function(x) {
-  iqr.thresh <- IQR(x)
-  return(max(x[x < median(x) + iqr.thresh]))
-}
-
-################################################################################
-# Compute bioactivity scores
-################################################################################
+# Compute distance to DMSO centroid
 xdist <- lapply(unique(x$PlateID), function(p) {
   out <- filter(x, PlateID == p) %>% dplyr::select(-matches('^PC'))
-  return(bioactivity(out, null_summary))
+  return(dmso_distance(out, null_summary))
 })
 
+#' ### Fig. S3 Cell count v. distance from DMSO by cell line
+#' Number of cells versus normalized distance from DMSO centroid by cell line.
+#' Points called bioactive (centroid distance > 1 IQR median DMSO sample 
+#' distances) are colored in orange. Each point corresponds to a well replicate.
+#+ bioactivity_count, fig.height=8, fig.width=12, echo=FALSE
 # Average bioactivity scores within treatment/cell line groups
 xgroup <- rbindlist(xdist) %>%
   group_by(Compound_ID) %>%
@@ -137,19 +130,21 @@ xgroup <- rbindlist(xdist) %>%
   arrange(Compound_ID, Cell_Line) 
 
 mutate(xgroup, Bioactive=DistNorm > 1) %>%
+  mutate(Bioactive=ifelse(Bioactive, 'Bioactive', 'Non-bioactive')) %>%
+  mutate(Bioactive=factor(Bioactive, levels=c('Non-bioactive', 'Bioactive'))) %>%
   ggplot(aes(x=NCells, y=DistNorm)) +
-  geom_point(aes(col=Bioactive), alpha=0.6) +
+  geom_point(aes(col=Bioactive), alpha=0.4) +
   facet_wrap(~Cell_Line) +
   scale_x_log10() +
-  scale_color_d3() +
+  scale_color_jama(name=element_blank()) +
   geom_vline(xintercept=ncell.thresh, lty=2, col='grey') +
-  ylab('Normalized distance from DMSO')
+  ylab('Distance from DMSO')
 
 #' # Similarity analysis
-#' The following case study consider the problem of clustering compounds based 
-#' on phenotypic profiles. Prior to clustering we filter compounds as follows:
+#' The following case study consider the problem of assessing phenotypic 
+#' similarity  relative to compound MOA. We filter to compounds as follows:
 #' 
-#' 1. Categories with at least `r min.cat` compounds 
+#' 1. MOA categories with at least `r min.cat` compounds 
 #' 2. Compounds that are called as bioactive (distance > 1)
 #' 3. Compounds that do not result in cell death phenotype (Ncells >= `r ncell.thresh`)
 #+ clustering_analysis
@@ -157,7 +152,8 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
 # Initialize cluster analysis compounds
 ################################################################################
 # Initialize bioactive compound set
-compounds.select <- filter(xgroup, DistNorm > 1 | Compound_ID == 'DMSO') %>%
+compounds.select <- xgroup %>%
+  filter(DistNorm > 1 | Compound_ID == 'DMSO') %>%
   filter(NCells >= ncell.thresh)
 
 # Get compound counts for bioactive set and filter based on minimum category size
@@ -166,7 +162,9 @@ compound.table <- select(compounds.select, Compound_ID, Category) %>%
   group_by(Category) %>%
   mutate(Count=n()) %>%
   filter(Count >= min.cat | Compound_ID == 'DMSO') %>%
-  filter(!is.na(Category))
+  filter(!is.na(Category)) %>%
+  filter(Category != 'Others') %>%
+  filter(Category != '')
 
 x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
   group_by(Compound_ID, Cell_Line) %>% 
@@ -174,7 +172,7 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
   ungroup()
 
-#' ## Case study for `r cell.line`
+#' ## Similarity by MOA
 #' To assess the similarity of compounds with the same MOA in phenotypic space, 
 #' we consider both within and between category similarity. Within category 
 #' similarity compares the distributions of: (i) pairwise distances between 
@@ -183,43 +181,81 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 #' phenotypic space than DMSO controls. Between category similarity compares the 
 #' distributions of: (i) pairwise distances between samples with the same MOA
 #' (ii) pairwise distances between samples with the given MOA and their nearest 
-#' neighbors. Intuitively, this asks whether points with the same MOA are closer
-#' to one another than other compounds.
+#' neighbors. Intuitively, this asks how close points with the same MOA are to
+#' one another relative to neighboring compounds.
 #' 
-#' We compare distributions using a signed KS statistic. For within category
+#' We compare distributions using a signed CVM statistic. For within category
 #' similarity, values < 0 imply that the DMSO samples are closer than than 
-#' samples with a given MOA. For between category similarity, values > 0 imply 
-#' that samples with the same MOA are closer to one another than to their 
-#' nearest neighbors.
+#' samples with a given MOA. For between category similarity, points are by 
+#' definition closer to their nearest neighbors. Thus the signed CVM statistic
+#' will always be $\le 0$ with equality when all neighbors are from the same MOA
+#' category. We therefore take 1 + the CVM statistic as our measure of between 
+#' category similarity.
 #+ analysis, fig.height=8, fig.width=16
 # Initialize feature set for select cell line
-xc <- filter(x, Cell_Line == cell.line)
-xc.feat <- select(xc, matches('^non'))
-colnames(xc.feat) <- str_remove_all(colnames(xc.feat), '^non\\.\\.\\.')
-category.table <- c(table(xc$Category))
 
-summary_fun <- function(x, y) cvm_stat(x, y, power=1)
-dist.category <- category_distance(xc.feat, xc$Category, summary_fun) %>%
-  mutate(Score=DistBetween + DistWithin) %>%
-  arrange(desc(Score)) %>%
-  mutate(Count=category.table[Category])
+# Compute within/between MOA similarity for each cell line
+moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
+  
+  xc <- filter(x, Cell_Line == cl)
+  xc.feat <- select(xc, matches('^non'))
+  
+  out <- category_distance(xc.feat, xc$Category, summary_fun) %>%
+    mutate(DistBetween= 1 + DistBetween) %>%
+    mutate(Count=table(xc$Category)[Category]) %>%
+    mutate(Cell_Line=cl)
+  
+  return(out)
+})
 
-#' Below we visualize phenotypic profiles projeted into umap space. We report 
-#' the top 5 most distinguishable categories based on profile similarity.
-#+ umap
+moa.dist <- rbindlist(moa.dist)
+
+# Bootstrap within/between MOA similarity for each cell line
+moa.dist.bs <- mclapply(1:n.bootstrap, function(i) {
+  set.seed(i)
+  
+  out <- lapply(unique(x$Cell_Line), function(cl) {
+  
+    xc <- filter(x, Cell_Line == cl)
+    xc.feat <- select(xc, matches('^non'))
+    xc.dist <- as.matrix(dist(xc.feat))
+    
+    out <- category_distance(xc.feat, xc$Category, summary_fun, xc.dist, TRUE) %>%
+      mutate(DistBetween= 1 + DistBetween) %>%
+      mutate(Count=table(xc$Category)[Category]) %>%
+      mutate(Cell_Line=cl)
+  })
+  
+  return(rbindlist(out) %>% mutate(Rep=i))
+}, mc.cores=n.core)
+
+
+#' ### Fig 2a. UMAP projection of bioactive + DMSO compounds.
+#' Phenotypic profiles projected into umap space. Compounds with high within and
+#' between MOA similarity are shown in different colors. Note that UMAP 
+#' projection groups strongly clustering compounds (high between MOA similarity)
+#' while high within MOA similarity compounds are near the DMSO point cloud but
+#' more tightly clustered within.
+#+ umap, fig.height=12, fig.width=12
 ################################################################################
 # UMAP visualization
 ################################################################################
+# Subset to selected cell line for UMAP visualization
+xc <- filter(x, Cell_Line == umap.cell)
+xc.feat <- select(xc, matches('^non'))
+dist.category <- filter(moa.dist, Cell_Line == umap.cell)
+
 # Initialize umap embedding for visualization
 configs <- umap.defaults
 configs$n_neighbors <- min.cat
 xumap <- umap(xc.feat)
 
 # Initialize data for visualization
-xplot <- data.frame(X1=xumap$layout[,1], X2=xumap$layout[,2]) %>%
-  mutate(Category=xc$Category)
+xplot <- data.frame(Category=xc$Category) %>%
+  mutate(X1=xumap$layout[,1]) %>%
+  mutate(X2=xumap$layout[,2])
 
-# Plot select compound category in UMAP space, top neighborhood
+# Select compounds with high within/between compound similarity
 within.select <- arrange(dist.category, desc(DistWithin))$Category[1:2]
 between.select <- arrange(dist.category, desc(DistBetween))$Category[1:2]
 category.select <- c(within.select, between.select, 'DMSO')
@@ -228,6 +264,7 @@ xplot.select <- filter(xplot, Category %in% category.select)
 xplot.other <- filter(xplot, !Category %in% category.select) %>%
   mutate(Category='Other')
 
+# Plot select compound category in UMAP space, top neighborhood
 p <- rbind(xplot.select, xplot.other) %>%
   mutate(Size=(Category != 'Other') + 1) %>%
   mutate(Size=Size + (!Category %in% c('DMSO', 'Other'))) %>%
@@ -245,7 +282,179 @@ if (save.fig) pdf(str_c(fig.dir, cell.line, '.pdf'), height=12, width=12)
 plot(p)
 if(save.fig) dev.off()
 
-dist.category <- mutate(dist.category, Cell_Line=cell.line)
-save(file=str_c(output.dir, cell.line, '.Rdata'), dist.category)
+#' ### Fig 2b. Between MOA similarity
+#' To assess the ability of different cell lines to phenotypically group 
+#' compounds by MOA, we consider the distance between compounds (in phenotypic 
+#' space) with the same MOA relative to nearby compounds with different MOA. The 
+#' figure below reports this relative distance by MOA and cell line.
+#+ moa_sim_between, fig.height=12, fig.width=16
+################################################################################
+# Visualize heatmap of clustering strength
+################################################################################
+moa.dist <- arrange(moa.dist, Category, Cell_Line)
+categories <- unique(moa.dist$Category)
+cell.lines <- unique(moa.dist$Cell_Line)
+
+# Initialize data to be plotted
+xplot <- matrix(moa.dist$DistBetween, nrow=length(cell.lines))
+colnames(xplot) <- categories
+rownames(xplot) <- cell.lines
+
+# Rank compounds by average MOA similarity
+avg.sim <- rowMeans(xplot)
+row.order <- order(avg.sim, decreasing=TRUE)
+
+# Filter to compounds in top quartile
+thresh <- quantile(xplot, 0.75)
+xplot <- xplot[,colSums(xplot > thresh) > 1]
+xplot <- xplot[,colnames(xplot) != 'DMSO']
+xplot <- xplot[,colnames(xplot) != 'Others']
+between.moa <- colnames(xplot)
+
+# Filter to categories enriched in at least one cell line
+col.order <- order(
+  xplot[row.order[1],],
+  xplot[row.order[2],],
+  xplot[row.order[3],],
+  xplot[row.order[4],],
+  xplot[row.order[5],],
+  xplot[row.order[6],]
+)
+
+# Clean column names for figure
+colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
+
+superheat(
+  xplot[row.order, col.order], 
+  bottom.label.text.angle=90,
+  bottom.label.size=0.75
+)
+
+#' ### Fig 2c. Within MOA similarity
+#' To assess the ability of different cell lines to phenotypically group 
+#' compounds by MOA, we consider the distance between compounds (in phenotypic 
+#' space) with the same MOA relative to the distance between DMSO compounds. The 
+#' figure below reports this relative distance by MOA and cell line.
+#+ moa_sim_within, fig.height=12, fig.width=16
+
+# Initialize data to be plotted
+xplot <- matrix(moa.dist$DistWithin, nrow=length(cell.lines))
+colnames(xplot) <- categories
+rownames(xplot) <- cell.lines
+
+# Filter to compounds in top quartile
+thresh <- quantile(xplot, 0.75)
+xplot <- xplot[,colSums(xplot > thresh) > 1]
+xplot <- xplot[,colnames(xplot) != 'DMSO']
+xplot[xplot < -thresh.plot] <- -thresh.plot
+xplot[xplot > thresh.plot] <- thresh.plot
+within.moa <- colnames(xplot)
+
+# Filter to categories enriched in at least one cell line
+col.order <- order(
+  xplot[row.order[1],],
+  xplot[row.order[2],],
+  xplot[row.order[3],],
+  xplot[row.order[4],],
+  xplot[row.order[5],],
+  xplot[row.order[6],]
+)
+
+superheat(
+  xplot[row.order, col.order], 
+  bottom.label.text.angle=90,
+  bottom.label.size=0.75,
+  heat.pal=heat.pal,
+  heat.lim=c(-thresh.plot, thresh.plot)
+)
+
+#' ### Fig 2d.  Optimal cell line selection
+#' Below we compute the optimal cell lines for detecting within and between 
+#' compound similarity. For between similarity, we use MOA weights to consider 
+#' only "strongly clustering compounds" — at least one cell line > 75th 
+#' percentile. For Within compound similarity, we consider all MOAs weighted 
+#' equally.
+#+ moa_opt, fig.height=12, fig.width=16
+# TODO generate within/between for each cell line set (take max)
+# Compute score
+# Initialize cell line sets
+cell.pairs <- combn(cell.lines, 2, simplify=FALSE)
+cell.sets <- c(cell.pairs, cell.lines)
+cell.sets.str <- sapply(cell.sets, str_c, collapse=', ')
+kcells <- sapply(cell.sets, length)
+
+# Initialize weights for within/between MOA scoring
+wt.within <- setNames(rep(1, length(within.moa)), within.moa)
+wt.between <- setNames(rep(1, length(between.moa)), between.moa)
+
+# Score cell line sets by between MOA similarity
+moa.score.between <- sapply(moa.dist.bs, function(z) {
+  
+  # Aggregate between similarity scores for cell line sets
+  xagg <- sapply(cell.sets, function(cs) {
+    out <- aggregate_similarity(z, cs) %>% arrange(desc(Category))
+    return(setNames(out$DistBetween, out$Category))
+  })
+  
+  colnames(xagg) <- cell.sets.str
+  return(score_bioactive(t(xagg), wt.between))
+})
+
+# Score cell line sets by within MOA similarity
+moa.score.within <- sapply(moa.dist.bs, function(z) {
+  
+  # Aggregate between similarity scores for cell line sets
+  xagg <- sapply(cell.sets, function(cs) {
+    out <- aggregate_similarity(z, cs) %>% arrange(desc(Category))
+    return(setNames(out$DistWithin, out$Category))
+  })
+  
+  colnames(xagg) <- cell.sets.str
+  return(score_bioactive(t(xagg), wt.within))
+})
+
+
+xopt.between <- reshape2::melt(moa.score.between) %>%
+  mutate(CellSet=cell.sets.str[Var1]) %>%
+  mutate(KCells=as.factor(kcells[Var1])) %>%
+  mutate(Score=value) %>%
+  mutate(Type='Between MOA')
+
+xopt.within <- reshape2::melt(moa.score.within) %>%
+  mutate(CellSet=cell.sets.str[Var1]) %>%
+  mutate(KCells=as.factor(kcells[Var1])) %>%
+  mutate(Score=value) %>%
+  mutate(Type='Within MOA')
+
+# Plot optimal bioactivity scores
+col.pal <- pal_nejm()(4)
+
+p1 <- xopt.between %>%
+  mutate(Alpha=as.numeric(KCells)) %>%
+  ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[3], color=col.pal[3]) +
+  ylab('Between MOA similarity') +
+  scale_color_nejm(drop=FALSE) +
+  scale_fill_nejm(drop=FALSE) +
+  scale_alpha(range=c(0.25, 0.75)) +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  xlab(NULL)
+
+p2 <- xopt.within %>%
+  mutate(Alpha=as.numeric(KCells)) %>%
+  ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[4], color=col.pal[4]) +
+  ylab('Within MOA similarity') +
+  scale_color_nejm(drop=FALSE) +
+  scale_fill_nejm(drop=FALSE) +
+  scale_alpha(range=c(0.25, 0.75)) +
+  theme(legend.position='none') +
+  theme(axis.text.x=element_text(angle=90)) +
+  xlab(NULL)
+
+if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=12, width=8)
+gridExtra::grid.arrange(p1, p2, ncol=1)
+if(save.fig) dev.off()
 
 

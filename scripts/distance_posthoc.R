@@ -5,6 +5,7 @@ library(tidytext)
 library(parallel)
 library(superheat)
 library(ggsci)
+library(RColorBrewer)
 library(hrbrthemes)
 
 theme_set(
@@ -25,15 +26,17 @@ source('scripts/utilities.R')
 ################################################################################
 # Initialize color palettes
 heat.pal <- viridis::viridis(10)
-enrich.thresh <- 0.3
+heat.pal <- brewer.pal(9, 'RdBu')
+thresh.plot <- 0.3
 
-################################################################################
-# Load results
-################################################################################
 # Initialize input/output directories and load KS profile data
 analysis.dir <- '~/github/cancer_translator/'
 result.dir <- str_c(analysis.dir, 'results/distance/')
 fig.dir <- str_c(analysis.dir, 'results/figures/fig2/')
+
+################################################################################
+# Load results
+################################################################################
 files <- list.files(result.dir)
 
 x.similarity <- lapply(files, function(f) {
@@ -41,12 +44,10 @@ x.similarity <- lapply(files, function(f) {
   return(dist.category)
 })
 
-x.similarity <- rbindlist(x.similarity) %>%
-  mutate(DistBetween=1 + DistBetween) %>%
-  mutate(Score=DistWithin + DistBetween) %>%
-  arrange(desc(Category), desc(Cell_Line))
+# Sort by category/cell line
+x.similarity <- rbindlist(x.similarity) %>% arrange(Category, Cell_Line)
 
-#' # MOA similarity: distance between
+#' ### Fig 2b. Between MOA similarity
 #' To assess the ability of different cell lines to phenotypically group 
 #' compounds by MOA, we consider the distance between compounds (in phenotypic 
 #' space) with the same MOA relative to nearby compounds with different MOA. The 
@@ -74,7 +75,6 @@ xplot <- xplot[,colSums(xplot > thresh) > 1]
 xplot <- xplot[,colnames(xplot) != 'DMSO']
 xplot <- xplot[,colnames(xplot) != 'Others']
 
-
 # Filter to categories enriched in at least one cell line
 col.order <- order(
   xplot[row.order[1],],
@@ -91,18 +91,12 @@ superheat(
   bottom.label.size=0.75
 )
 
-#' # MOA similarity: distance within
+#' ### Fig 2c. Within MOA similarity
 #' To assess the ability of different cell lines to phenotypically group 
 #' compounds by MOA, we consider the distance between compounds (in phenotypic 
 #' space) with the same MOA relative to the distance between DMSO compounds. The 
 #' figure below reports this relative distance by MOA and cell line.
 #+ moa_sim_within, fig.height=12, fig.width=16
-################################################################################
-# Visualize heatmap of clustering strength
-################################################################################
-heat.pal <- RColorBrewer::brewer.pal(9, 'RdBu')
-categories <- unique(x.similarity$Category)
-cell.lines <- unique(x.similarity$Cell_Line)
 
 # Initialize data to be plotted
 xplot <- matrix(x.similarity$DistWithin, nrow=length(cell.lines))
@@ -113,8 +107,8 @@ rownames(xplot) <- cell.lines
 thresh <- quantile(xplot, 0.75)
 xplot <- xplot[,colSums(xplot > thresh) > 1]
 xplot <- xplot[,colnames(xplot) != 'DMSO']
-xplot[xplot < -0.3] <- -0.3
-xplot[xplot > 0.3] <- 0.3
+xplot[xplot < -thresh.plot] <- -thresh.plot
+xplot[xplot > thresh.plot] <- thresh.plot
 
 # Filter to categories enriched in at least one cell line
 col.order <- order(
@@ -131,12 +125,15 @@ superheat(
   bottom.label.text.angle=90,
   bottom.label.size=0.75,
   heat.pal=heat.pal,
-  heat.lim=c(-0.3, 0.3)
+  heat.lim=c(-thresh.plot, thresh.plot)
 )
 
-#' # MOA similarity: optimal cell line selection
-#' To assess optimal cell line for MOA detection, we compute the average between
-#' within and between MOA similarities.
+#' ### Fig 2d.  Optimal cell line selection
+#' Below we compute the optimal cell lines for detecting within and between 
+#' compound similarity. For between similarity, we use MOA weights to consider 
+#' only "strongly clustering compounds" — at least one cell line > 75th 
+#' percentile. For Within compound similarity, we consider all MOAs weighted 
+#' equally.
 #+ moa_opt, fig.height=12, fig.width=16
 xplot.between <- matrix(x.similarity$DistBetween, nrow=length(cell.lines))
 xplot.within <- matrix(x.similarity$DistWithin, nrow=length(cell.lines))
