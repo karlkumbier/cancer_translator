@@ -36,7 +36,8 @@ save.fig <- TRUE
 
 # Visualization parameters
 heat.pal <- viridis::viridis(10)
-heat.pal <- brewer.pal(9, 'RdBu')
+heat.pal.signed <- brewer.pal(9, 'RdBu')
+col.pal <- pal_nejm()(8)
 thresh.plot <- 0.3
 
 # Function for normalizing distances within plate relative to DMSO + 
@@ -86,22 +87,42 @@ x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
   filter(!is.na(Compound_Usage)) %>%
   dplyr::rename(Category_Vendor=Compound_Category)
 
-# Load compound target table
-x.target <- 'data/Bioactivity_broad_label/' %>%
-  str_c('bioactivity_broad_institute_label_20220108.csv') %>%
-  fread() %>%
-  dplyr::select(Compound_ID, MOA_broad_institute, Target_broad_institute) %>%
-  distinct() %>%
-  dplyr::rename(Category=MOA_broad_institute) 
+# Load cleaned MOA table
+xmoa <- fread('data/Unique_Screened_Compound_MOA.csv') %>%
+  dplyr::rename(Compound_ID=Compound_ID_1) %>%
+  dplyr::select(-InchIKeys_All) %>%
+  dplyr::rename(Category=MOA)
 
-# Merge Broad MOA labels
-x <- left_join(x, x.target, by='Compound_ID') %>%
-  #mutate(Category=ifelse(Category == '', Category_Vendor, Category)) %>%
+# Clean compound ID names 
+id2 <- match(x$Compound_ID, xmoa$Compound_ID_2)
+x$Compound_ID[!is.na(id2)] <- xmoa$Compound_ID[na.omit(id2)]
+
+id3 <- match(x$Compound_ID, xmoa$Compound_ID_3)
+x$Compound_ID[!is.na(id3)] <- xmoa$Compound_ID[na.omit(id3)]
+xmoa <- dplyr::select(xmoa, -Compound_ID_2, Compound_ID_3)
+
+# Merge data with MOA table
+x <- left_join(x, xmoa, by='Compound_ID') %>%
   mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
+
+# Filter to compound/dose combinations evaluated in all cell lines
+x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
+  distinct() %>%
+  group_by(Compound_ID, Dose_Category, Compound_Usage) %>% 
+  count() %>%
+  filter(n == n.cell.line) %>%
+  mutate(ID=str_c(Compound_ID, Dose_Category, Compound_Usage))
+
+x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
+  filter(ID %in% x.treat$ID) %>%
+  filter(!is.na(Compound_Usage))
+
+# Initialize plate x cell line key
+plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
 
 #' # Overview
 #' This notebook considers the problem of compound similarity based on 
-#' `r cell.line` phenotypic profiles. Compounds are first filtered based on 
+#' phenotypic profiles. Compounds are first filtered based on 
 #' bioactivity — as specified in the `bioactivity` notebook. At a high level, 
 #' bioactivity is based on the distance (evaluated over phenotypic profiles) 
 #' between a target well and a collection of DMSO control wells. 
@@ -197,9 +218,11 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 # Compute within/between MOA similarity for each cell line
 moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
   
+  # Filter to select cell line
   xc <- filter(x, Cell_Line == cl)
   xc.feat <- select(xc, matches('^non'))
   
+  # Compute within/between MOA distance
   out <- category_distance(xc.feat, xc$Category, summary_fun) %>%
     mutate(DistBetween= 1 + DistBetween) %>%
     mutate(Count=table(xc$Category)[Category]) %>%
@@ -216,10 +239,12 @@ moa.dist.bs <- mclapply(1:n.bootstrap, function(i) {
   
   out <- lapply(unique(x$Cell_Line), function(cl) {
   
+    # Filter to select cell line
     xc <- filter(x, Cell_Line == cl)
     xc.feat <- select(xc, matches('^non'))
     xc.dist <- as.matrix(dist(xc.feat))
     
+    # Compute bootstrap within/between MOA distance
     out <- category_distance(xc.feat, xc$Category, summary_fun, xc.dist, TRUE) %>%
       mutate(DistBetween= 1 + DistBetween) %>%
       mutate(Count=table(xc$Category)[Category]) %>%
@@ -269,16 +294,16 @@ p <- rbind(xplot.select, xplot.other) %>%
   mutate(Size=(Category != 'Other') + 1) %>%
   mutate(Size=Size + (!Category %in% c('DMSO', 'Other'))) %>%
   ggplot(aes(x=X1, y=X2, col=Category, size=Size, alpha=Size)) +
-  geom_jitter(height=0.025, width=0.025) +
+  geom_jitter(height=0.05, width=0.05) +
   xlab('UMAP1') +
   ylab('UMAP2') +
   scale_color_jama() +
   scale_size(guide='none', range=c(1.5, 2.5)) +
   scale_alpha(guide='none', range=c(0.25, 1)) +
   labs(col=NULL) +
-  theme(legend.position=c(0.8, 0.85))
+  theme(legend.position=c(0.8, 0.15))
 
-if (save.fig) pdf(str_c(fig.dir, cell.line, '.pdf'), height=12, width=12)
+if (save.fig) pdf(str_c(fig.dir, 'umap_', umap.cell, '.pdf'), height=12, width=12)
 plot(p)
 if(save.fig) dev.off()
 
@@ -324,11 +349,16 @@ col.order <- order(
 # Clean column names for figure
 colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
 
+fout <- str_c(fig.dir, 'between_sim.png')
+if (save.fig) png(fout, height=12, width=20, units='in', res=300)
 superheat(
   xplot[row.order, col.order], 
   bottom.label.text.angle=90,
-  bottom.label.size=0.75
+  bottom.label.size=0.5,
+  bottom.label.text.size=5,
+  heat.pal=heat.pal
 )
+if (save.fig) dev.off()
 
 #' ### Fig 2c. Within MOA similarity
 #' To assess the ability of different cell lines to phenotypically group 
@@ -360,13 +390,17 @@ col.order <- order(
   xplot[row.order[6],]
 )
 
+fout <- str_c(fig.dir, 'within_sim.png')
+if (save.fig) png(fout, height=12, width=20, units='in', res=300)
+colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
 superheat(
   xplot[row.order, col.order], 
   bottom.label.text.angle=90,
   bottom.label.size=0.75,
-  heat.pal=heat.pal,
+  heat.pal=heat.pal.signed,
   heat.lim=c(-thresh.plot, thresh.plot)
 )
+if (save.fig) dev.off()
 
 #' ### Fig 2d.  Optimal cell line selection
 #' Below we compute the optimal cell lines for detecting within and between 
@@ -427,12 +461,10 @@ xopt.within <- reshape2::melt(moa.score.within) %>%
   mutate(Type='Within MOA')
 
 # Plot optimal bioactivity scores
-col.pal <- pal_nejm()(4)
-
 p1 <- xopt.between %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
-  geom_boxplot(aes(alpha=Alpha), fill=col.pal[3], color=col.pal[3]) +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[5], color=col.pal[5]) +
   ylab('Between MOA similarity') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +
@@ -444,7 +476,7 @@ p1 <- xopt.between %>%
 p2 <- xopt.within %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
-  geom_boxplot(aes(alpha=Alpha), fill=col.pal[4], color=col.pal[4]) +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[6], color=col.pal[6]) +
   ylab('Within MOA similarity') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +

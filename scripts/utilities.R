@@ -142,7 +142,7 @@ bioactive_difference_ctg <- function(x, cell.lines, categories, bootstrap=FALSE)
   # Compute deviation between DMSO, category ECDFs for select cell line(s)
   out <- sapply(categories, function(ctg) {
     sapply(cell.lines, function(cl) {
-      xctg <- filter(x, Compound_Category %in% c(ctg, 'DMSO'))
+      xctg <- filter(x, Category %in% c(ctg, 'DMSO'))
       bioactive_difference(xctg, cl, bootstrap)
     }) 
   })
