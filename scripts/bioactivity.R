@@ -30,7 +30,7 @@ intensity.normalize <- TRUE
 n.core <- 16
 min.cat <- 5
 n.bootstrap <- 25
-save.fig <- TRUE
+save.fig <- FALSE #TRUE
 
 # Function for normalizing distances within plate relative to DMSO
 null_summary <- function(x) {
@@ -50,7 +50,8 @@ source('scripts/utilities.R')
 
 # Load KS profile data
 data.dir <- 'data/screens/LH_CDC_1/'
-load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
+#load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
+load(str_c(data.dir, 'profiles_normalized.Rdata'))
 x <- dplyr::select(x, -matches('^PC'))
 
 # Initialize # of cell lines
@@ -249,6 +250,16 @@ rbindlist(xumap) %>%
 
 rbindlist(xumap) %>%
   filter(Compound_ID == 'DMSO') %>%
+  group_by(Compound_ID) %>%
+  mutate(RowID=as.factor(RowID)) %>%
+  ggplot(aes(x=UMAP1, y=UMAP2, col=RowID)) +
+  geom_jitter(height=0.25, width=0.25, alpha=0.5) +
+  facet_wrap(~Cell_Line) +
+  theme(legend.position='none') +
+  ggtitle('DMSO samples by column ID')
+
+rbindlist(xumap) %>%
+  filter(Compound_ID == 'DMSO') %>%
   ggplot(aes(x=UMAP1, y=UMAP2, col=PlateID)) +
   geom_jitter(height=0.25, width=0.25, alpha=0.5) +
   facet_wrap(~Cell_Line) +
@@ -256,28 +267,33 @@ rbindlist(xumap) %>%
   theme(legend.position='none') +
   ggtitle('DMSO samples by plate ID')
 
+
+# Initialize parameters for visualization
+cat.umap <- c('glucocorticoid receptor agonist', 'HDAC inhibitor')
+col.pal.umap <- pal_jama()(5)[c(1, 2, 4)]
+
 p <- rbindlist(xumap) %>%
   filter(Cell_Line %in% c('OVCAR4', 'HEPG2')) %>%
-  mutate(DistNorm=pmin(DistNorm, 3)) %>%
+  mutate(Color=ifelse(Compound_ID == 'DMSO', 'DMSO', 'Other')) %>%
+  mutate(Color=ifelse(Category == cat.umap[1], cat.umap[1], Color)) %>%
+  mutate(Color=ifelse(Category == cat.umap[2], cat.umap[2], Color)) %>%
+  mutate(Alpha=as.numeric(Color != 'DMSO')) %>%
   filter(!is.na(Category)) %>%
-  mutate(Shape=Category == 'glucocorticoid receptor agonist') %>%
-  mutate(Size=ifelse(Shape, 1, 0.75)) %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose)) | Compound_ID == 'DMSO') %>%
-  ggplot(aes(x=UMAP1, y=UMAP2, col=DistNorm, shape=Shape, size=Size, alpha=Size)) +
+  filter(Color != 'Other') %>%
+  ggplot(aes(x=UMAP1, y=UMAP2, col=Color, alpha=Alpha)) +
   geom_jitter(height=0.05, width=0.05) +
   facet_wrap(~Cell_Line, ncol=1) +
-  scale_color_gradientn(colors=viridis::inferno(12)[-12]) +
+  scale_color_manual(values=col.pal.umap) +
   labs(col=NULL) +
-  scale_shape_manual(breaks=c('TRUE', 'FALSE'), values=c(8, 20)) +
-  scale_alpha(range=c(0.15, 1)) +
-  scale_size(range=c(1, 1.25)) +
+  scale_alpha(range=c(0.3, 1)) +
   guides(shape='none') +
   guides(size='none') +
   guides(alpha='none') +
-  theme(legend.position=c(0.1, 0.9))
+  theme(legend.position=c(0.25, 0.1))
 
-if (save.fig) pdf(str_c(fig.dir, 'umap.pdf'), height=12, width=8)
+if (save.fig) pdf(str_c(fig.dir, 'umap.pdf'), height=12, width=12)
 plot(p)  
 if(save.fig) dev.off()
 
@@ -316,7 +332,6 @@ p <- xmerge %>%
   scale_fill_d3(name='') +
   scale_color_d3(name='') +
   xlab('Distance from DMSO centroid') +
-  ylab(NULL) +
   facet_wrap(~Cell_Line) +
   theme(legend.position=c(0.9, 0.9))
 
@@ -324,11 +339,35 @@ if (save.fig) pdf(str_c(fig.dir, 'density.pdf'), height=6, width=14)
 plot(p)  
 if(save.fig) dev.off()
 
+
+xplot1 <- xmerge %>%
+  filter(Category %in% c(cat.umap[1], 'DMSO')) %>%
+  filter(Cell_Line %in% c('OVCAR4', 'HEPG2')) %>%
+  mutate(Type=cat.umap[1])
+
+xplot2 <- xmerge %>%
+  filter(Category %in% c(cat.umap[2], 'DMSO')) %>%
+  filter(Cell_Line %in% c('OVCAR4', 'HEPG2')) %>%
+  mutate(Type=cat.umap[2])
+
+p <- rbind(xplot1, xplot2) %>%
+  ggplot(aes(x=DistNorm)) +
+  geom_density(aes(fill=Category, color=Category), alpha=0.5, bw='nrd') +
+  scale_fill_manual(values=col.pal.umap, name='') +
+  scale_color_manual(values=col.pal.umap, name='') +
+  xlab('Distance from DMSO centroid') +
+  facet_grid(Type~Cell_Line) +
+  theme(legend.position='none')
+
+if (save.fig) pdf(str_c(fig.dir, 'density_select.pdf'), height=12, width=12)
+plot(p)  
+if(save.fig) dev.off()
+
 p <- xmerge %>%
   mutate(Type=ifelse(Compound_ID == 'DMSO', 'DMSO', 'Other')) %>%
   group_by(Type, Cell_Line) %>%
   arrange(DistNorm) %>%
-  mutate(ECDF=(1:n()) / n()) %>%
+  mutate(ECDF=(0:(n() - 1)) / n()) %>%
   ggplot(aes(x=DistNorm, y=ECDF)) +
   geom_line(aes(color=Type), lwd=1) +
   scale_color_d3(name='') +
@@ -341,6 +380,24 @@ if (save.fig) pdf(str_c(fig.dir, 'ecdf.pdf'), height=8, width=12)
 plot(p)  
 if(save.fig) dev.off()
 
+p <- xmerge %>%
+  filter(Category %in% c(cat.umap, 'DMSO')) %>%
+  filter(Cell_Line %in% c('OVCAR4', 'HEPG2')) %>%
+  group_by(Category, Cell_Line) %>%
+  arrange(DistNorm) %>%
+  mutate(ECDF=(0:(n() - 1)) / n()) %>%
+  ggplot(aes(x=DistNorm, y=ECDF)) +
+  geom_line(aes(color=Category), lwd=1) +
+  scale_color_manual(values=col.pal.umap, name='') +
+  xlab('Distance from DMSO centroid') +
+  ylab(NULL) +
+  facet_wrap(~Cell_Line) +
+  theme(legend.position=c(0.9, 0.15))
+
+if (save.fig) pdf(str_c(fig.dir, 'ecdf_select.pdf'), height=8, width=12)
+plot(p)  
+if(save.fig) dev.off()
+
 #' ### Fig 1c. Bioactivity by cell line, compound category 
 #' 
 #' Bioactivity scores by cell line compound category. Scores for a given MOA
@@ -350,6 +407,7 @@ if(save.fig) dev.off()
 # Compute bioactivity score by compound category
 cell.lines <- unique(xmerge$Cell_Line)
 xplot <- bioactive_difference_ctg(xmerge, cell.lines, cat.keep)
+save(file=str_c(output.dir, 'category_bioactivity.Rdata'), xplot)
 
 # Initialize column ordering and bioactivity proportions
 bioactive.score <- rowMeans(xplot)
@@ -435,7 +493,7 @@ xopt.spec <- reshape2::melt(xopt.spec) %>%
 p1 <- xopt.gen %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
-  geom_boxplot(aes(alpha=Alpha), fill=col.pal[3], color=col.pal[3]) +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[2], color=col.pal[2]) +
   ylab('Bioactivity score') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +
@@ -448,7 +506,7 @@ p1 <- xopt.gen %>%
 p2 <- xopt.spec %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
-  geom_boxplot(aes(alpha=Alpha), fill=col.pal[4], color=col.pal[4]) +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[2], color=col.pal[2]) +
   ylab('Bioactivity score') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +
@@ -458,6 +516,6 @@ p2 <- xopt.spec %>%
   ggtitle('Specialist', str_c(specialist.cat, collapse=', ')) +
   xlab(NULL)
 
-if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=12, width=8)
+if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=12, width=12)
 gridExtra::grid.arrange(p1, p2, ncol=1)
 if(save.fig) dev.off()

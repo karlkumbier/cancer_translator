@@ -53,7 +53,8 @@ summary_fun <- function(x, y) cvm_stat(x, y, power=1)
 ################################################################################
 # Load dataset
 ################################################################################
-setwd('~/github/cancer_translator/')
+analysis.dir <- '~/github/cancer_translator/'
+setwd(analysis.dir)
 source('scripts/utilities.R')
 
 # Load KS profile data
@@ -172,13 +173,9 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
 ################################################################################
 # Initialize cluster analysis compounds
 ################################################################################
-# Initialize bioactive compound set
-compounds.select <- xgroup %>%
-  filter(DistNorm > 1 | Compound_ID == 'DMSO') %>%
-  filter(NCells >= ncell.thresh)
 
 # Get compound counts for bioactive set and filter based on minimum category size
-compound.table <- select(compounds.select, Compound_ID, Category) %>%
+compound.table <- select(xgroup, Compound_ID, Category) %>%
   distinct() %>%
   group_by(Category) %>%
   mutate(Count=n()) %>%
@@ -268,7 +265,9 @@ moa.dist.bs <- mclapply(1:n.bootstrap, function(i) {
 # Subset to selected cell line for UMAP visualization
 xc <- filter(x, Cell_Line == umap.cell)
 xc.feat <- select(xc, matches('^non'))
-dist.category <- filter(moa.dist, Cell_Line == umap.cell)
+dist.category <- filter(moa.dist, Cell_Line == umap.cell) %>% 
+  arrange(desc(DistBetween)) %>%
+  filter(Category != 'DMSO')
 
 # Initialize umap embedding for visualization
 configs <- umap.defaults
@@ -281,15 +280,17 @@ xplot <- data.frame(Category=xc$Category) %>%
   mutate(X2=xumap$layout[,2])
 
 # Select compounds with high within/between compound similarity
-within.select <- arrange(dist.category, desc(DistWithin))$Category[1:2]
-between.select <- arrange(dist.category, desc(DistBetween))$Category[1:2]
-category.select <- c(within.select, between.select, 'DMSO')
+between.select <- dist.category$Category[1:3]
+category.select <- c(between.select, 'DMSO', 'HDAC inhibitor', 'DNA inhibitor')
 
 xplot.select <- filter(xplot, Category %in% category.select)
 xplot.other <- filter(xplot, !Category %in% category.select) %>%
   mutate(Category='Other')
 
 # Plot select compound category in UMAP space, top neighborhood
+col.pal.umap <- pal_jama()(7)
+col.pal.umap <- col.pal.umap[c(1, 3, 2, 4:7)]
+
 p <- rbind(xplot.select, xplot.other) %>%
   mutate(Size=(Category != 'Other') + 1) %>%
   mutate(Size=Size + (!Category %in% c('DMSO', 'Other'))) %>%
@@ -297,17 +298,47 @@ p <- rbind(xplot.select, xplot.other) %>%
   geom_jitter(height=0.05, width=0.05) +
   xlab('UMAP1') +
   ylab('UMAP2') +
-  scale_color_jama() +
+  scale_color_manual(values=col.pal.umap) +
   scale_size(guide='none', range=c(1.5, 2.5)) +
-  scale_alpha(guide='none', range=c(0.25, 1)) +
+  scale_alpha(guide='none', range=c(0.25, 0.9)) +
   labs(col=NULL) +
-  theme(legend.position=c(0.8, 0.15))
+  theme(legend.position=c(0.15, 0.8))
 
 if (save.fig) pdf(str_c(fig.dir, 'umap_', umap.cell, '.pdf'), height=12, width=12)
 plot(p)
 if(save.fig) dev.off()
 
-#' ### Fig 2b. Between MOA similarity
+#' ### Fig 2b. Query v reference densities
+#' Kernel densities of pairwise distances for query (color) and reference (grey)
+#' groups. Reference population defined as nearest neighbors of the query 
+#' population.
+#+ densities, fig.height=12, fig.width=12
+  
+# Compute within/between MOA distance distributions
+category.select <- setdiff(category.select, 'DMSO')
+moa.distn <- category_distance_distn(xc.feat, xc$Category)
+moa.distn <- moa.distn[category.select]
+
+# Format data table for figure
+col.pal.umap <- pal_jama()(7)
+col.pal.umap <- col.pal.umap[c(3,2,4,5,7,1)]
+col.pal.umap[6] <- '#CCCCCC'
+
+p <- reshape2::melt(moa.distn) %>%
+  mutate(L2=ifelse(L2 == 'Query', L1, L2)) %>%
+  ggplot(aes(x=value, fill=L2, col=L2)) +
+  geom_density(alpha=0.6) +
+  scale_fill_manual(values=col.pal.umap) +
+  scale_color_manual(values=col.pal.umap) +
+  facet_wrap(~L1, ncol=1) +
+  xlab('Pairwise distance') +
+  theme(legend.position='none')
+
+if (save.fig) pdf(str_c(fig.dir, 'density_', umap.cell, '.pdf'), height=12, width=6)
+plot(p)
+if(save.fig) dev.off()
+
+#' ### Fig 2c. Between MOA similarity
 #' To assess the ability of different cell lines to phenotypically group 
 #' compounds by MOA, we consider the distance between compounds (in phenotypic 
 #' space) with the same MOA relative to nearby compounds with different MOA. The 
@@ -350,7 +381,7 @@ col.order <- order(
 colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
 
 fout <- str_c(fig.dir, 'between_sim.png')
-if (save.fig) png(fout, height=12, width=20, units='in', res=300)
+if (save.fig) png(fout, height=12.5, width=26, units='in', res=300)
 superheat(
   xplot[row.order, col.order], 
   bottom.label.text.angle=90,
@@ -360,47 +391,6 @@ superheat(
 )
 if (save.fig) dev.off()
 
-#' ### Fig 2c. Within MOA similarity
-#' To assess the ability of different cell lines to phenotypically group 
-#' compounds by MOA, we consider the distance between compounds (in phenotypic 
-#' space) with the same MOA relative to the distance between DMSO compounds. The 
-#' figure below reports this relative distance by MOA and cell line.
-#+ moa_sim_within, fig.height=12, fig.width=16
-
-# Initialize data to be plotted
-xplot <- matrix(moa.dist$DistWithin, nrow=length(cell.lines))
-colnames(xplot) <- categories
-rownames(xplot) <- cell.lines
-
-# Filter to compounds in top quartile
-thresh <- quantile(xplot, 0.75)
-xplot <- xplot[,colSums(xplot > thresh) > 1]
-xplot <- xplot[,colnames(xplot) != 'DMSO']
-xplot[xplot < -thresh.plot] <- -thresh.plot
-xplot[xplot > thresh.plot] <- thresh.plot
-within.moa <- colnames(xplot)
-
-# Filter to categories enriched in at least one cell line
-col.order <- order(
-  xplot[row.order[1],],
-  xplot[row.order[2],],
-  xplot[row.order[3],],
-  xplot[row.order[4],],
-  xplot[row.order[5],],
-  xplot[row.order[6],]
-)
-
-fout <- str_c(fig.dir, 'within_sim.png')
-if (save.fig) png(fout, height=12, width=20, units='in', res=300)
-colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
-superheat(
-  xplot[row.order, col.order], 
-  bottom.label.text.angle=90,
-  bottom.label.size=0.75,
-  heat.pal=heat.pal.signed,
-  heat.lim=c(-thresh.plot, thresh.plot)
-)
-if (save.fig) dev.off()
 
 #' ### Fig 2d.  Optimal cell line selection
 #' Below we compute the optimal cell lines for detecting within and between 
@@ -409,8 +399,6 @@ if (save.fig) dev.off()
 #' percentile. For Within compound similarity, we consider all MOAs weighted 
 #' equally.
 #+ moa_opt, fig.height=12, fig.width=16
-# TODO generate within/between for each cell line set (take max)
-# Compute score
 # Initialize cell line sets
 cell.pairs <- combn(cell.lines, 2, simplify=FALSE)
 cell.sets <- c(cell.pairs, cell.lines)
@@ -418,7 +406,6 @@ cell.sets.str <- sapply(cell.sets, str_c, collapse=', ')
 kcells <- sapply(cell.sets, length)
 
 # Initialize weights for within/between MOA scoring
-wt.within <- setNames(rep(1, length(within.moa)), within.moa)
 wt.between <- setNames(rep(1, length(between.moa)), between.moa)
 
 # Score cell line sets by between MOA similarity
@@ -434,38 +421,19 @@ moa.score.between <- sapply(moa.dist.bs, function(z) {
   return(score_bioactive(t(xagg), wt.between))
 })
 
-# Score cell line sets by within MOA similarity
-moa.score.within <- sapply(moa.dist.bs, function(z) {
-  
-  # Aggregate between similarity scores for cell line sets
-  xagg <- sapply(cell.sets, function(cs) {
-    out <- aggregate_similarity(z, cs) %>% arrange(desc(Category))
-    return(setNames(out$DistWithin, out$Category))
-  })
-  
-  colnames(xagg) <- cell.sets.str
-  return(score_bioactive(t(xagg), wt.within))
-})
-
-
 xopt.between <- reshape2::melt(moa.score.between) %>%
   mutate(CellSet=cell.sets.str[Var1]) %>%
   mutate(KCells=as.factor(kcells[Var1])) %>%
   mutate(Score=value) %>%
   mutate(Type='Between MOA')
 
-xopt.within <- reshape2::melt(moa.score.within) %>%
-  mutate(CellSet=cell.sets.str[Var1]) %>%
-  mutate(KCells=as.factor(kcells[Var1])) %>%
-  mutate(Score=value) %>%
-  mutate(Type='Within MOA')
 
 # Plot optimal bioactivity scores
-p1 <- xopt.between %>%
+p <- xopt.between %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
-  geom_boxplot(aes(alpha=Alpha), fill=col.pal[5], color=col.pal[5]) +
-  ylab('Between MOA similarity') +
+  geom_boxplot(aes(alpha=Alpha), fill=col.pal[2], color=col.pal[2]) +
+  ylab('MOA similarity') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +
   scale_alpha(range=c(0.25, 0.75)) +
@@ -473,20 +441,32 @@ p1 <- xopt.between %>%
   theme(axis.text.x=element_text(angle=90)) +
   xlab(NULL)
 
-p2 <- xopt.within %>%
-  mutate(Alpha=as.numeric(KCells)) %>%
-  ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
-  geom_boxplot(aes(alpha=Alpha), fill=col.pal[6], color=col.pal[6]) +
-  ylab('Within MOA similarity') +
-  scale_color_nejm(drop=FALSE) +
-  scale_fill_nejm(drop=FALSE) +
-  scale_alpha(range=c(0.25, 0.75)) +
-  theme(legend.position='none') +
-  theme(axis.text.x=element_text(angle=90)) +
-  xlab(NULL)
-
-if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=12, width=8)
-gridExtra::grid.arrange(p1, p2, ncol=1)
+if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=8, width=8)
+plot(p)
 if(save.fig) dev.off()
 
+#' ### Fig 2d.  Bioactivity v. cell similarity
+#' Joint distribution of bioactivity/MOA similarity scores
+#+ bioactive_similarity
+setwd(analysis.dir)
+load('results/cell_line/category_bioactivity.Rdata')
 
+bioactive.dist <- reshape2::melt(xplot) %>%
+  mutate(ID=str_c(Var1, Var2, sep='_')) %>%
+  mutate(Bioactivity=value)
+
+moa.dist <- mutate(moa.dist, ID=str_c(Cell_Line, Category, sep='_')) %>%
+  left_join(bioactive.dist, by='ID')
+
+xplot <- filter(moa.dist, Cell_Line == umap.cell)
+xplot.text <- filter(xplot, Category %in% category.select)
+
+p <- ggplot(xplot, aes(x=Bioactivity, y=DistBetween)) +
+  geom_point() +
+  geom_text(data=xplot.text, aes(label=Category), nudge_y=0.0075, nudge_x=-0.01) +
+  xlab('Bioactivity score') +
+  ylab('MOA similarity')
+
+if (save.fig) pdf(str_c(fig.dir, 'bioactive_v_moa.pdf'), height=12, width=12)
+plot(p)
+if(save.fig) dev.off()

@@ -27,11 +27,6 @@ correlation_weight <- function(x, normalize=FALSE) {
     
     # Weight features
     xfeat.c <- data.frame(t(t(xfeat.c) * xcor.wt))
-    
-    #configs <- umap.defaults
-    #configs$n_neighbors <- 5
-    #xfeat.c <- umap(xfeat.c)$layout
-    
     return(cbind(xnfeat.c, xfeat.c))
   })
 
@@ -76,26 +71,48 @@ bootstrap_sample <- function(x) {
 ################################################################################
 # Normalization functions
 ################################################################################
-intensity_normalize <- function(x) {
-  # Wrapper function to normalize all ntensity features
-  col <- as.numeric(x$Col)
+normalize_features <- function(x) {
+  # Wrapper function to normalize features
   features <- colnames(x) %>% str_subset('^nonborder')
-
+  xpredict <- dplyr::select(x, ColID, RowID, Compound_ID)
+  
   for (f in features) {
-    x[[f]] <- intensity_normalize_(col, x[[f]])
+    xpredict.f <- mutate(xpredict, Y=x[[f]])
+    x[[f]] <- normalize_features_(xpredict.f)
   }
   
   return(x)
 }
 
-intensity_normalize_ <- function(col, y) {
+normalize_features_ <- function(x) {
   # Normalize intensity as residuals from lm using column as predictor
-  out <- rep(NA, length(y))
-  names(out) <- 1:length(y)
   
-  fit <- lm(y ~ as.numeric(col))
-  out[names(fit$residuals)] <- fit$residuals
-  return(out)
+  # Initialize DMSO data set for model fitting
+  x.fit <- filter(x, Compound_ID == 'DMSO') %>% dplyr::select(-Compound_ID)
+
+  # Initialize outlier samples to drop from model fitting
+  outlier.thresh <- 1.5 * IQR(x.fit$Y)
+  outlier.med <- median(x.fit$Y)
+  id.low <- x.fit$Y < outlier.med - outlier.thresh
+  id.high <- x.fit$Y > outlier.med + outlier.thresh
+  id.drop <- id.low | id.high
+  
+  # Fit model and compute residuals
+  if (length(unique(x$ColID)) > 2) {
+    fit <- lm(Y ~ ColID + RowID, data=x.fit[!id.drop,])
+    x.full <- dplyr::select(x, -Compound_ID)
+    ypred <- predict(fit, x.full)
+    out <- x.full$Y - ypred
+  } else {
+    fit <- lm(Y ~ RowID, data=x.fit[!id.drop,])
+    x.full <- dplyr::select(x, -Compound_ID)
+    ypred <- predict(fit, x.full)
+    out <- x.full$Y - ypred  
+  }
+  
+  # DMSO-center feature
+  centroid <- median(out[x$Compound_ID == 'DMSO'])
+  return(out - centroid)
 }
 
 ################################################################################
@@ -192,12 +209,6 @@ category_distance <- function(x, categories, summary_fun, dist.mat=NULL, bootstr
   dmso.dist <- dist.mat[id.dmso, id.dmso]
   dmso.dist <- dmso.dist[upper.tri(dmso.dist)]
   
-  # Add epsilon noise if bootstrapping
-  #if (bootstrap) {
-  #  eps <- rnorm(length(dmso.dist), sd=1e-10)
-  #  dmso.dist <- dmso.dist + eps
-  #}
-
   # Compute within category distances
   dist.summary <- sapply(unique(categories), function(ctg) {
     # Compute within category distance distribution
@@ -205,12 +216,6 @@ category_distance <- function(x, categories, summary_fun, dist.mat=NULL, bootstr
     if (bootstrap) id.ctg <- id.bootstrap[id.bootstrap %in% id.ctg]
     ctg.dist <- dist.mat[id.ctg, id.ctg]
     ctg.dist <- ctg.dist[upper.tri(ctg.dist)]
-    
-    # Add epsilon noise if bootstrapping
-    #if (bootstrap) {
-    #  eps <- rnorm(length(ctg.dist), sd=1e-10)
-    #  ctg.dist <- ctg.dist + eps
-    #}
     
     # Compute category neighborhood distance distribution
     if (bootstrap) dist.mat <- dist.mat[,unique(id.bootstrap)]
@@ -228,6 +233,32 @@ category_distance <- function(x, categories, summary_fun, dist.mat=NULL, bootstr
   
   return(out)
 }
+
+category_distance_distn <- function(x, categories, dist.mat=NULL) {
+  
+  # Compute pairwise distances
+  if (is.null(dist.mat)) dist.mat <- dist(x) %>% as.matrix
+  
+  # Compute within category distances
+  distn <- lapply(unique(categories), function(ctg) {
+    # Compute within category distance distribution
+    id.ctg <- which(categories == ctg)
+    ctg.dist <- dist.mat[id.ctg, id.ctg]
+    ctg.dist <- ctg.dist[upper.tri(ctg.dist)]
+    
+    # Compute category neighborhood distance distribution
+    nbhd.dist <- apply(dist.mat[id.ctg, ], MAR=1, function(z) sort(z))
+    nbhd.dist <- c(nbhd.dist[2:length(unique(id.ctg)),])
+    
+    out <- list(ctg.dist, nbhd.dist)
+    names(out) <- c('Query', 'Reference')
+    return(out)
+  })
+  
+  names(distn) <- unique(categories)
+  return(distn)
+}
+
 
 aggregate_similarity <- function(x, cell.lines) {
   # Aggregate as max similarity across cell lines
