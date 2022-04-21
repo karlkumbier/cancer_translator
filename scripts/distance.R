@@ -26,13 +26,12 @@ theme_set(
 # Initialize constant parameters to be used in analysis
 ################################################################################
 # Initialize analysis parameters
-intensity.normalize <- TRUE
 n.core <- 16
 min.cat <- 5
 ncell.thresh <- 50
 n.bootstrap <- 25
 umap.cell <- 'A549'
-save.fig <- TRUE
+save.fig <- FALSE
 
 # Visualization parameters
 heat.pal <- viridis::viridis(10)
@@ -56,77 +55,17 @@ summary_fun <- function(x, y) cvm_stat(x, y, power=1)
 analysis.dir <- '~/github/cancer_translator/'
 setwd(analysis.dir)
 source('scripts/utilities.R')
-
-# Load KS profile data
-data.dir <- 'data/screens/LH_CDC_1/'
-load(str_c(data.dir, 'profiles_qc_norm=', intensity.normalize, '.Rdata'))
-x <- dplyr::select(x, -matches('^PC'))
-
-# Initialize # of cell lines
-n.cell.line <- length(unique(x$Cell_Line))
+source('scripts/load_normalized_data.R')
 
 # initialize output directories
 output.dir <- '~/github/cancer_translator/results/distance/'
 fig.dir <- '~/github/cancer_translator/results/figures/fig2/'
 dir.create(output.dir, showWarnings=FALSE)
 
-# Clean compound categories
-x <- group_by(x, Compound_ID) %>%
-  mutate(Compound_Category=select_category(Compound_Category)) %>%
-  ungroup()
-
-# Filter to compound/dose combinations evaluated in all cell lines
-x.treat <- dplyr::select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
-  distinct() %>%
-  group_by(Compound_ID, Dose_Category, Compound_Usage) %>% 
-  count() %>%
-  filter(n == n.cell.line) %>%
-  mutate(ID=str_c(Compound_ID, Dose_Category, Compound_Usage))
-
-x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
-  filter(ID %in% x.treat$ID) %>%
-  filter(!is.na(Compound_Usage)) %>%
-  dplyr::rename(Category_Vendor=Compound_Category)
-
-# Load cleaned MOA table
-xmoa <- fread('data/Unique_Screened_Compound_MOA.csv') %>%
-  dplyr::rename(Compound_ID=Compound_ID_1) %>%
-  dplyr::select(-InchIKeys_All) %>%
-  dplyr::rename(Category=MOA)
-
-# Clean compound ID names 
-id2 <- match(x$Compound_ID, xmoa$Compound_ID_2)
-x$Compound_ID[!is.na(id2)] <- xmoa$Compound_ID[na.omit(id2)]
-
-id3 <- match(x$Compound_ID, xmoa$Compound_ID_3)
-x$Compound_ID[!is.na(id3)] <- xmoa$Compound_ID[na.omit(id3)]
-xmoa <- dplyr::select(xmoa, -Compound_ID_2, Compound_ID_3)
-
-# Merge data with MOA table
-x <- left_join(x, xmoa, by='Compound_ID') %>%
-  mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
-
-# Filter to compound/dose combinations evaluated in all cell lines
-x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
-  distinct() %>%
-  group_by(Compound_ID, Dose_Category, Compound_Usage) %>% 
-  count() %>%
-  filter(n == n.cell.line) %>%
-  mutate(ID=str_c(Compound_ID, Dose_Category, Compound_Usage))
-
-x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
-  filter(ID %in% x.treat$ID) %>%
-  filter(!is.na(Compound_Usage))
-
-# Initialize plate x cell line key
-plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
-
 #' # Overview
 #' This notebook considers the problem of compound similarity based on 
-#' phenotypic profiles. Compounds are first filtered based on 
-#' bioactivity — as specified in the `bioactivity` notebook. At a high level, 
-#' bioactivity is based on the distance (evaluated over phenotypic profiles) 
-#' between a target well and a collection of DMSO control wells. 
+#' phenotypic profiles. Similarities are computed over correlation re-weighted
+#' pehnotypic profiles.
 #+ bioactivity, fig.height=8, fig.width=12, echo=FALSE
 # Mean-center + correlation weight features by cell line for subsequent analysis
 x <- correlation_weight(x, TRUE)
@@ -137,6 +76,7 @@ xdist <- lapply(unique(x$PlateID), function(p) {
   return(dmso_distance(out, null_summary))
 })
 
+if (FALSE) {
 #' ### Fig. S3 Cell count v. distance from DMSO by cell line
 #' Number of cells versus normalized distance from DMSO centroid by cell line.
 #' Points called bioactive (centroid distance > 1 IQR median DMSO sample 
@@ -161,6 +101,7 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
   scale_color_jama(name=element_blank()) +
   geom_vline(xintercept=ncell.thresh, lty=2, col='grey') +
   ylab('Distance from DMSO')
+}
 
 #' # Similarity analysis
 #' The following case study consider the problem of assessing phenotypic 
@@ -175,7 +116,7 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
 ################################################################################
 
 # Get compound counts for bioactive set and filter based on minimum category size
-compound.table <- select(xgroup, Compound_ID, Category) %>%
+compound.table <- select(x, Compound_ID, Category) %>%
   distinct() %>%
   group_by(Category) %>%
   mutate(Count=n()) %>%
@@ -221,6 +162,7 @@ moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
   
   # Compute within/between MOA distance
   out <- category_distance(xc.feat, xc$Category, summary_fun) %>%
+    mutate(DistBetween=DistBetween / 0.5) %>%
     mutate(DistBetween= 1 + DistBetween) %>%
     mutate(Count=table(xc$Category)[Category]) %>%
     mutate(Cell_Line=cl)
@@ -243,6 +185,7 @@ moa.dist.bs <- mclapply(1:n.bootstrap, function(i) {
     
     # Compute bootstrap within/between MOA distance
     out <- category_distance(xc.feat, xc$Category, summary_fun, xc.dist, TRUE) %>%
+      mutate(DistBetween=DistBetween / 0.5) %>%
       mutate(DistBetween= 1 + DistBetween) %>%
       mutate(Count=table(xc$Category)[Category]) %>%
       mutate(Cell_Line=cl)
@@ -387,7 +330,8 @@ superheat(
   bottom.label.text.angle=90,
   bottom.label.size=0.5,
   bottom.label.text.size=5,
-  heat.pal=heat.pal
+  heat.pal=heat.pal,
+  heat.lim=c(0, max(xplot))
 )
 if (save.fig) dev.off()
 
@@ -462,8 +406,8 @@ xplot <- filter(moa.dist, Cell_Line == umap.cell)
 xplot.text <- filter(xplot, Category %in% category.select)
 
 p <- ggplot(xplot, aes(x=Bioactivity, y=DistBetween)) +
-  geom_point() +
-  geom_text(data=xplot.text, aes(label=Category), nudge_y=0.0075, nudge_x=-0.01) +
+  geom_point(alpha=0.5) +
+  geom_text(data=xplot.text, aes(label=Category), nudge_y=0.0075, nudge_x=-0.005) +
   xlab('Bioactivity score') +
   ylab('MOA similarity')
 
