@@ -17,7 +17,7 @@ theme_set(
   )
 )
 
-if (is.null(min.cat)) min.cat <- 5
+if (!exists('min.cat')) min.cat <- 5
 
 # Initialize color palettes
 heat.pal <- viridis::viridis(10)
@@ -49,6 +49,14 @@ xmoa <- fread(str_c(base.dir, 'data/Unique_Screened_Compound_MOA.csv')) %>%
   dplyr::select(-InchIKeys_All) %>%
   dplyr::rename(Category=MOA)
 
+xmoa.clean <- fread(str_c(base.dir, 'data/Screened_Compound_ID_MOA_added_20200420.csv')) %>%
+  dplyr::select(-InchIKeys_All) %>%
+  dplyr::rename(Category=MOA) %>%
+  dplyr::select(-Compound_Category, -Pathway, -Target)
+
+x <- left_join(x, xmoa.clean, by='Compound_ID') %>%
+  mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
+
 # Clean compound ID names 
 id2 <- match(x$Compound_ID, xmoa$Compound_ID_2)
 x$Compound_ID[!is.na(id2)] <- xmoa$Compound_ID[na.omit(id2)]
@@ -58,9 +66,9 @@ x$Compound_ID[!is.na(id3)] <- xmoa$Compound_ID[na.omit(id3)]
 xmoa <- dplyr::select(xmoa, -Compound_ID_2, Compound_ID_3)
 
 # Merge data with MOA table
-x <- left_join(x, xmoa, by='Compound_ID') %>%
-  dplyr::select(-Compound_Category) %>%
-  mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
+#x <- left_join(x, xmoa, by='Compound_ID') %>%
+#  dplyr::select(-Compound_Category) %>%
+#  mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
 
 # Filter to compound/dose combinations evaluated in all cell lines
 x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%

@@ -22,6 +22,9 @@ theme_set(
   )
 )
 
+# Check replicates + clean: average KS scores across replicates at the highest concentration...
+
+
 ################################################################################
 # Initialize constant parameters to be used in analysis
 ################################################################################
@@ -29,7 +32,7 @@ theme_set(
 n.core <- 16
 min.cat <- 5
 ncell.thresh <- 50
-n.bootstrap <- 25
+n.bootstrap <- 2
 umap.cell <- 'A549'
 save.fig <- FALSE
 
@@ -76,33 +79,6 @@ xdist <- lapply(unique(x$PlateID), function(p) {
   return(dmso_distance(out, null_summary))
 })
 
-if (FALSE) {
-#' ### Fig. S3 Cell count v. distance from DMSO by cell line
-#' Number of cells versus normalized distance from DMSO centroid by cell line.
-#' Points called bioactive (centroid distance > 1 IQR median DMSO sample 
-#' distances) are colored in orange. Each point corresponds to a well replicate.
-#+ bioactivity_count, fig.height=8, fig.width=12, echo=FALSE
-# Average bioactivity scores within treatment/cell line groups
-xgroup <- rbindlist(xdist) %>%
-  group_by(Compound_ID) %>%
-  filter(Dose == max(as.numeric(Dose))) %>%
-  ungroup() %>%
-  group_by(Cell_Line, Compound_ID, Category) %>% 
-  summarize(DistNorm=mean(DistNorm), NCells=mean(NCells), .groups='drop') %>%
-  arrange(Compound_ID, Cell_Line) 
-
-mutate(xgroup, Bioactive=DistNorm > 1) %>%
-  mutate(Bioactive=ifelse(Bioactive, 'Bioactive', 'Non-bioactive')) %>%
-  mutate(Bioactive=factor(Bioactive, levels=c('Non-bioactive', 'Bioactive'))) %>%
-  ggplot(aes(x=NCells, y=DistNorm)) +
-  geom_point(aes(col=Bioactive), alpha=0.4) +
-  facet_wrap(~Cell_Line) +
-  scale_x_log10() +
-  scale_color_jama(name=element_blank()) +
-  geom_vline(xintercept=ncell.thresh, lty=2, col='grey') +
-  ylab('Distance from DMSO')
-}
-
 #' # Similarity analysis
 #' The following case study consider the problem of assessing phenotypic 
 #' similarity  relative to compound MOA. We filter to compounds as follows:
@@ -114,22 +90,27 @@ mutate(xgroup, Bioactive=DistNorm > 1) %>%
 ################################################################################
 # Initialize cluster analysis compounds
 ################################################################################
+cpd.drop.dup <- group_by(x, Compound_ID) %>%
+  summarize(Cat=list(unique(Category))) %>%
+  mutate(NCat=sapply(Cat, length)) %>%
+  filter(NCat > 1)
+
+x <- filter(x, !Compound_ID %in%  cpd.drop.dup$Compound_ID)
 
 # Get compound counts for bioactive set and filter based on minimum category size
-compound.table <- select(x, Compound_ID, Category) %>%
+compound.table <- select(x, Compound_ID, Category, Cell_Line) %>%
   distinct() %>%
-  group_by(Category) %>%
+  group_by(Category, Cell_Line) %>%
   mutate(Count=n()) %>%
   filter(Count >= min.cat | Compound_ID == 'DMSO') %>%
   filter(!is.na(Category)) %>%
   filter(Category != 'Others') %>%
   filter(Category != '')
 
-x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
-  group_by(Compound_ID, Cell_Line) %>% 
-  mutate(Dose=as.numeric(Dose)) %>%
-  filter(Dose == max(as.numeric(Dose))) %>%
-  ungroup()
+# TODO: check why we are getting low counts here...
+# Appears to be issue with compound ID having different category between 
+# above/below
+x <- filter(x, Compound_ID %in% compound.table$Compound_ID)
 
 #' ## Similarity by MOA
 #' To assess the similarity of compounds with the same MOA in phenotypic space, 
@@ -155,7 +136,6 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID) %>%
 
 # Compute within/between MOA similarity for each cell line
 moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
-  
   # Filter to select cell line
   xc <- filter(x, Cell_Line == cl)
   xc.feat <- select(xc, matches('^non'))
@@ -391,7 +371,7 @@ if(save.fig) dev.off()
 
 #' ### Fig 2d.  Bioactivity v. cell similarity
 #' Joint distribution of bioactivity/MOA similarity scores
-#+ bioactive_similarity
+#+ bioactive_similarity, fig.height=12, fig.width=12
 setwd(analysis.dir)
 load('results/cell_line/category_bioactivity.Rdata')
 

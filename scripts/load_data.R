@@ -3,7 +3,8 @@ library(tidyverse)
 library(rprofiler)
 library(parallel)
 
-setwd('/awlab/Lab_temp/Louise/opfeatures/')
+#setwd('/awlab/Lab_temp/Louise/opfeatures/')
+setwd('/Users/kkumbier/github/cancer_translator/data/screens')
 plate.dir <- 'LH_CDC_1/raw_data/'
 platemap.dir <- 'LH_CDC_1/platemaps/'
 

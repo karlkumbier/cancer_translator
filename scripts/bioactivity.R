@@ -28,7 +28,7 @@ theme_set(
 # Initialize analysis parameters
 n.core <- 16
 min.cat <- 5
-n.bootstrap <- 25
+n.bootstrap <- 2
 save.fig <- FALSE #TRUE
 
 # Function for normalizing distances within plate relative to DMSO
@@ -51,8 +51,8 @@ source('scripts/load_normalized_data.R')
 
 
 # Initialize output directories
-output.dir <- 'results/cell_line/'
-fig.dir <- 'results/figures/fig1/'
+output.dir <- '~/github/cancer_translator/results/cell_line/'
+fig.dir <- '~/github/cancer_translator/results/figures/fig1/'
 
 dir.create(output.dir, showWarnings=FALSE)
 output.file <- str_c(output.dir, 'bioactivity.Rdata') 
@@ -267,6 +267,27 @@ plot(p)
 if(save.fig) dev.off()
 
 
+# Comparison of hepg2 and ovcar 4
+xhepg2 <- filter(xmerge, Cell_Line == 'HEPG2', Category == 'HDAC inhibitor') %>%
+  arrange(DistNorm)
+
+xovcar <- filter(xmerge, Cell_Line == 'OVCAR4', Category == 'HDAC inhibitor') %>%
+  arrange(DistNorm)
+
+xx <- left_join(xhepg2, xovcar, by='Compound_ID')
+plot(xx$DistNorm.x, xx$DistNorm.y)
+
+
+xhepg2 <- filter(xmerge, Cell_Line == 'HEPG2', str_detect(Category, 'glucocorticoid')) %>%
+  arrange(DistNorm)
+
+xovcar <- filter(xmerge, Cell_Line == 'OVCAR4', str_detect(Category, 'glucocorticoid')) %>%
+  arrange(DistNorm)
+
+xx <- left_join(xhepg2, xovcar, by='Compound_ID')
+plot(xx$DistNorm.x, xx$DistNorm.y)
+
+
 xplot1 <- xmerge %>%
   filter(Category %in% c(cat.umap[1], 'DMSO')) %>%
   filter(Cell_Line %in% c('OVCAR4', 'HEPG2')) %>%
@@ -331,7 +352,7 @@ if(save.fig) dev.off()
 #' Bioactivity scores by cell line compound category. Scores for a given MOA
 #' category are computed by comparing DMSO centroid distances between DMSO wells
 #' and wells with a select MOA.
-#+ bioactivity_category, fig.height=12, fig.width=18
+#+ bioactivity_category, fig.height=18, fig.width=24
 # Compute bioactivity score by compound category
 cell.lines <- unique(xmerge$Cell_Line)
 xplot <- bioactive_difference_ctg(xmerge, cell.lines, cat.keep)
@@ -381,7 +402,7 @@ if (save.fig) dev.off()
 #' ### Fig. 1d. Bioactivity optimization
 #' Optimal cell line sets over all compounds — equivalent to setting category 
 #' weights proportional to # of compounds in each category.
-#+ bioactivity_generalist
+#+ bioactivity_generalist, fig.height=12, fig.width=12
 # Initialize cell line sets
 cell.pairs <- combn(cell.lines, 2, simplify=FALSE)
 cell.sets <- c(cell.pairs, cell.lines)
