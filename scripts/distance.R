@@ -22,9 +22,6 @@ theme_set(
   )
 )
 
-# Check replicates + clean: average KS scores across replicates at the highest concentration...
-
-
 ################################################################################
 # Initialize constant parameters to be used in analysis
 ################################################################################
@@ -32,8 +29,9 @@ theme_set(
 n.core <- 16
 min.cat <- 5
 ncell.thresh <- 50
-n.bootstrap <- 2
-umap.cell <- 'A549'
+n.bootstrap <- 50
+#umap.cells <- c('A549', '786-0')
+umap.cells <- c('A549', 'FB')
 save.fig <- FALSE
 
 # Visualization parameters
@@ -59,6 +57,7 @@ analysis.dir <- '~/github/cancer_translator/'
 setwd(analysis.dir)
 source('scripts/utilities.R')
 source('scripts/load_normalized_data.R')
+cell.lines <- unique(x$Cell_Line)
 
 # initialize output directories
 output.dir <- '~/github/cancer_translator/results/distance/'
@@ -90,12 +89,6 @@ xdist <- lapply(unique(x$PlateID), function(p) {
 ################################################################################
 # Initialize cluster analysis compounds
 ################################################################################
-cpd.drop.dup <- group_by(x, Compound_ID) %>%
-  summarize(Cat=list(unique(Category))) %>%
-  mutate(NCat=sapply(Cat, length)) %>%
-  filter(NCat > 1)
-
-x <- filter(x, !Compound_ID %in%  cpd.drop.dup$Compound_ID)
 
 # Get compound counts for bioactive set and filter based on minimum category size
 compound.table <- select(x, Compound_ID, Category, Cell_Line) %>%
@@ -107,9 +100,6 @@ compound.table <- select(x, Compound_ID, Category, Cell_Line) %>%
   filter(Category != 'Others') %>%
   filter(Category != '')
 
-# TODO: check why we are getting low counts here...
-# Appears to be issue with compound ID having different category between 
-# above/below
 x <- filter(x, Compound_ID %in% compound.table$Compound_ID)
 
 #' ## Similarity by MOA
@@ -141,9 +131,10 @@ moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
   xc.feat <- select(xc, matches('^non'))
   
   # Compute within/between MOA distance
-  out <- category_distance(xc.feat, xc$Category, summary_fun) %>%
-    mutate(DistBetween=DistBetween / 0.5) %>%
-    mutate(DistBetween= 1 + DistBetween) %>%
+  xdist <- phenosimilarity(xc.feat, xc$Category, summary_fun)
+  out <- data.frame(Category=rownames(xdist), Dist=xdist$DistBetween) %>%
+    mutate(Dist=Dist / 0.5) %>%
+    mutate(Dist= 1 + Dist) %>%
     mutate(Count=table(xc$Category)[Category]) %>%
     mutate(Cell_Line=cl)
   
@@ -153,26 +144,30 @@ moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
 moa.dist <- rbindlist(moa.dist)
 
 # Bootstrap within/between MOA similarity for each cell line
-moa.dist.bs <- mclapply(1:n.bootstrap, function(i) {
-  set.seed(i)
+moa.dist.bs <- lapply(unique(x$Cell_Line), function(cl) {
   
-  out <- lapply(unique(x$Cell_Line), function(cl) {
+  # Filter to select cell line
+  xc <- filter(x, Cell_Line == cl)
+  xc.feat <- select(xc, matches('^non'))
+  xc.dist <- as.matrix(dist(xc.feat))
   
-    # Filter to select cell line
-    xc <- filter(x, Cell_Line == cl)
-    xc.feat <- select(xc, matches('^non'))
-    xc.dist <- as.matrix(dist(xc.feat))
+  out <- mclapply(1:n.bootstrap, function(i) {
+
+    set.seed(i)
     
     # Compute bootstrap within/between MOA distance
-    out <- category_distance(xc.feat, xc$Category, summary_fun, xc.dist, TRUE) %>%
-      mutate(DistBetween=DistBetween / 0.5) %>%
-      mutate(DistBetween= 1 + DistBetween) %>%
+    xdist <- phenosimilarity(xc.feat, xc$Category, summary_fun, xc.dist, TRUE)
+    out <- data.frame(Category=rownames(xdist), Dist=xdist$DistBetween) %>%
+      mutate(Dist=1 + (Dist / 0.5)) %>%
       mutate(Count=table(xc$Category)[Category]) %>%
-      mutate(Cell_Line=cl)
-  })
+      mutate(Cell_Line=cl) %>%
+      mutate(Rep=i)
+    
+    return(out)
+  }, mc.cores=n.core)
   
-  return(rbindlist(out) %>% mutate(Rep=i))
-}, mc.cores=n.core)
+  return(rbindlist(out))
+})
 
 
 #' ### Fig 2a. UMAP projection of bioactive + DMSO compounds.
@@ -186,46 +181,62 @@ moa.dist.bs <- mclapply(1:n.bootstrap, function(i) {
 # UMAP visualization
 ################################################################################
 # Subset to selected cell line for UMAP visualization
-xc <- filter(x, Cell_Line == umap.cell)
-xc.feat <- select(xc, matches('^non'))
-dist.category <- filter(moa.dist, Cell_Line == umap.cell) %>% 
-  arrange(desc(DistBetween)) %>%
-  filter(Category != 'DMSO')
+xplot <- lapply(umap.cells, function(cl) {
+ 
+  set.seed(47)
+  
+  # Filter to data from select cell line
+  xc <- filter(x, Cell_Line == cl)
+  xc.feat <- select(xc, matches('^non'))
+  dist.category <- filter(moa.dist, Cell_Line == cl) %>% 
+    arrange(desc(Dist)) %>%
+    filter(Category != 'DMSO')
 
-# Initialize umap embedding for visualization
-configs <- umap.defaults
-configs$n_neighbors <- min.cat
-xumap <- umap(xc.feat)
+  # Initialize umap embedding for visualization
+  configs <- umap.defaults
+  configs$n_neighbors <- min.cat
+  xumap <- umap(xc.feat, config=configs)
 
-# Initialize data for visualization
-xplot <- data.frame(Category=xc$Category) %>%
-  mutate(X1=xumap$layout[,1]) %>%
-  mutate(X2=xumap$layout[,2])
+  # Initialize data for visualization
+  out <- data.frame(Category=xc$Category) %>%
+    mutate(Cell_Line=cl) %>%
+    mutate(X1=xumap$layout[,1]) %>%
+    mutate(X2=xumap$layout[,2]) 
+  
+  return(out)
+})
+  
 
 # Select compounds with high within/between compound similarity
-between.select <- dist.category$Category[1:3]
-category.select <- c(between.select, 'DMSO', 'HDAC inhibitor', 'DNA inhibitor')
+category.select <- c(
+  'HSP inhibitor',
+  'glycogen synthase kinase inhibitor',
+  'SYK inhibitor',
+  'DMSO'
+)
 
+xplot <- rbindlist(xplot)
 xplot.select <- filter(xplot, Category %in% category.select)
 xplot.other <- filter(xplot, !Category %in% category.select) %>%
   mutate(Category='Other')
 
 # Plot select compound category in UMAP space, top neighborhood
 col.pal.umap <- pal_jama()(7)
-col.pal.umap <- col.pal.umap[c(1, 3, 2, 4:7)]
+col.pal.umap[4:5] <- col.pal.umap[5:4]
 
 p <- rbind(xplot.select, xplot.other) %>%
   mutate(Size=(Category != 'Other') + 1) %>%
   mutate(Size=Size + (!Category %in% c('DMSO', 'Other'))) %>%
   ggplot(aes(x=X1, y=X2, col=Category, size=Size, alpha=Size)) +
-  geom_jitter(height=0.05, width=0.05) +
+  geom_jitter(height=0.25, width=0.25) +
   xlab('UMAP1') +
   ylab('UMAP2') +
   scale_color_manual(values=col.pal.umap) +
   scale_size(guide='none', range=c(1.5, 2.5)) +
   scale_alpha(guide='none', range=c(0.25, 0.9)) +
   labs(col=NULL) +
-  theme(legend.position=c(0.15, 0.8))
+  facet_wrap(~Cell_Line, ncol=1) +
+  theme(legend.position=c(0.15, 0.95))
 
 if (save.fig) pdf(str_c(fig.dir, 'umap_', umap.cell, '.pdf'), height=12, width=12)
 plot(p)
@@ -238,22 +249,36 @@ if(save.fig) dev.off()
 #+ densities, fig.height=12, fig.width=12
   
 # Compute within/between MOA distance distributions
-category.select <- setdiff(category.select, 'DMSO')
-moa.distn <- category_distance_distn(xc.feat, xc$Category)
-moa.distn <- moa.distn[category.select]
+moa.distn <- lapply(umap.cells, function(cl) {
+  xc <- filter(x, Cell_Line == cl)
+  xc.feat <- select(xc, matches('^non'))
+
+  category.select <- setdiff(category.select, 'DMSO')
+  out <- phenosimilarity_distn(xc.feat, xc$Category)
+  return(out[setdiff(category.select, 'DMSO')])
+})
 
 # Format data table for figure
 col.pal.umap <- pal_jama()(7)
-col.pal.umap <- col.pal.umap[c(3,2,4,5,7,1)]
-col.pal.umap[6] <- '#CCCCCC'
+col.pal.umap <- c(col.pal.umap[c(2, 3, 4)], '#CCCCCC')
+
+# Initialize text for scores
+category.select <- setdiff(category.select, 'DMSO')
+xplot.text <- filter(moa.dist, Category %in% category.select) %>%
+  filter(Cell_Line %in% umap.cells) %>%
+  rename(L2=Category) %>%
+  mutate(L3=L2) %>%
+  mutate(Dist=round(Dist, 3))
 
 p <- reshape2::melt(moa.distn) %>%
-  mutate(L2=ifelse(L2 == 'Query', L1, L2)) %>%
-  ggplot(aes(x=value, fill=L2, col=L2)) +
+  mutate(Cell_Line=umap.cells[L1]) %>%
+  mutate(L3=ifelse(L3 == 'Query', L2, 'ZZZ')) %>%
+  ggplot(aes(x=value, fill=L3, col=L3)) +
   geom_density(alpha=0.6) +
+  geom_text(data=xplot.text, x=3, y=1.5, size=6, aes(label=Dist)) +
+  facet_grid(Cell_Line~L2) +
   scale_fill_manual(values=col.pal.umap) +
   scale_color_manual(values=col.pal.umap) +
-  facet_wrap(~L1, ncol=1) +
   xlab('Pairwise distance') +
   theme(legend.position='none')
 
@@ -275,7 +300,7 @@ categories <- unique(moa.dist$Category)
 cell.lines <- unique(moa.dist$Cell_Line)
 
 # Initialize data to be plotted
-xplot <- matrix(moa.dist$DistBetween, nrow=length(cell.lines))
+xplot <- matrix(moa.dist$Dist, nrow=length(cell.lines))
 colnames(xplot) <- categories
 rownames(xplot) <- cell.lines
 
@@ -288,7 +313,7 @@ thresh <- quantile(xplot, 0.75)
 xplot <- xplot[,colSums(xplot > thresh) > 1]
 xplot <- xplot[,colnames(xplot) != 'DMSO']
 xplot <- xplot[,colnames(xplot) != 'Others']
-between.moa <- colnames(xplot)
+categories.moa <- colnames(xplot)
 
 # Filter to categories enriched in at least one cell line
 col.order <- order(
@@ -306,10 +331,9 @@ colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
 fout <- str_c(fig.dir, 'between_sim.png')
 if (save.fig) png(fout, height=12.5, width=26, units='in', res=300)
 superheat(
-  xplot[row.order, col.order], 
-  bottom.label.text.angle=90,
-  bottom.label.size=0.5,
-  bottom.label.text.size=5,
+  t(xplot[row.order, col.order]), 
+  left.label.size=0.5,
+  left.label.text.size=5,
   heat.pal=heat.pal,
   heat.lim=c(0, max(xplot))
 )
@@ -325,35 +349,41 @@ if (save.fig) dev.off()
 #+ moa_opt, fig.height=12, fig.width=16
 # Initialize cell line sets
 cell.pairs <- combn(cell.lines, 2, simplify=FALSE)
-cell.sets <- c(cell.pairs, cell.lines)
+cell.sets <- c(list(cell.lines), cell.pairs, cell.lines)
 cell.sets.str <- sapply(cell.sets, str_c, collapse=', ')
+cell.sets.str[1] <- str_replace_all(cell.sets.str[1], '145,', '145,\n')
+
 kcells <- sapply(cell.sets, length)
 
 # Initialize weights for within/between MOA scoring
-wt.between <- setNames(rep(1, length(between.moa)), between.moa)
+weights <- setNames(rep(1, length(categories.moa)), categories.moa)
 
 # Score cell line sets by between MOA similarity
-moa.score.between <- sapply(moa.dist.bs, function(z) {
+moa.dist.bs <- rbindlist(moa.dist.bs)
+
+moa.score <- sapply(1:n.bootstrap, function(i) {
   
   # Aggregate between similarity scores for cell line sets
+  z <- filter(moa.dist.bs, Rep == i)
   xagg <- sapply(cell.sets, function(cs) {
     out <- aggregate_similarity(z, cs) %>% arrange(desc(Category))
-    return(setNames(out$DistBetween, out$Category))
+    return(setNames(out$Dist, out$Category))
   })
   
   colnames(xagg) <- cell.sets.str
-  return(score_bioactive(t(xagg), wt.between))
+  scores <- apply(xagg, MAR=2, score_bioactive, weights=weights)
+  return(scores)
 })
 
-xopt.between <- reshape2::melt(moa.score.between) %>%
+xopt <- reshape2::melt(moa.score) %>%
   mutate(CellSet=cell.sets.str[Var1]) %>%
   mutate(KCells=as.factor(kcells[Var1])) %>%
   mutate(Score=value) %>%
-  mutate(Type='Between MOA')
+  mutate(Type='MOA')
 
 
 # Plot optimal bioactivity scores
-p <- xopt.between %>%
+p <- xopt %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
   geom_boxplot(aes(alpha=Alpha), fill=col.pal[2], color=col.pal[2]) +
@@ -382,7 +412,7 @@ bioactive.dist <- reshape2::melt(xplot) %>%
 moa.dist <- mutate(moa.dist, ID=str_c(Cell_Line, Category, sep='_')) %>%
   left_join(bioactive.dist, by='ID')
 
-xplot <- filter(moa.dist, Cell_Line == umap.cell)
+xplot <- filter(moa.dist, Cell_Line == umap.cells[1])
 xplot.text <- filter(xplot, Category %in% category.select)
 
 p <- ggplot(xplot, aes(x=Bioactivity, y=DistBetween)) +

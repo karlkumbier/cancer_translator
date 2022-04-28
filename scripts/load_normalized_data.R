@@ -34,6 +34,15 @@ data.dir <- str_c(base.dir, 'data/screens/LH_CDC_1/')
 load(str_c(data.dir, 'profiles_normalized.Rdata'))
 x <- dplyr::select(x, -matches('^PC'))
 
+# Messy category table
+xx <- group_by(x, Compound_ID) %>% 
+  mutate(Category=Compound_Category) %>%
+  summarize(Category=list(na.omit(unique(Category)))) %>% 
+  mutate(NCat=sapply(Category, length)) %>%
+  arrange(desc(NCat)) %>%
+  mutate(Category=sapply(Category, str_c, collapse=', ')) %>%
+  select(-NCat)
+
 # Initialize # of cell lines
 n.cell.line <- length(unique(x$Cell_Line))
 
@@ -105,7 +114,7 @@ filter(xcat.tab, Count > 1) %>%
   theme(text=element_text(size=24))
 
 # Summarize prevalent compound categories
-xcat.tab.top <- filter(xcat.tab, Count >= min.cat, Category != '')
+xcat.tab.top <- filter(xcat.tab, Count >= 10, Category != '')
 cat.keep <- xcat.tab.top$Category
 
 xcat.tab.top %>%
@@ -127,12 +136,71 @@ category.table <- dplyr::select(x, Compound_ID, Category, Dose, Cell_Line) %>%
 ################################################################################
 # Filter to highest dose
 ################################################################################
-xctrl <- filter(x, str_detect(Compound_Usage, 'ctrl')) 
+xctrl <- filter(x, str_detect(Compound_Usage, 'ctrl')) %>%
+  group_by(Compound_ID) %>%
+  filter(Dose == max(as.numeric(Dose))) %>%
+  ungroup()
 
 xtreat <- filter(x, !str_detect(Compound_Usage, 'ctrl')) %>%
+  filter(!Compound_ID %in% xctrl$Compound_ID) %>%
   group_by(Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
   ungroup()
 
 x <- rbind(xctrl, xtreat) %>%
   mutate(Cell_Line=ifelse(Cell_Line == 'ALS-WT', 'FB', Cell_Line))
+
+################################################################################
+# Clean inconsistent categories
+################################################################################
+xcat.clean <- data.frame(
+  Compound_ID=c(
+    '(-)-Menthol', 
+    'Ademetionine', 
+    'Berbamine', 
+    'Camphor', 
+    'Cisapride hydrate', 
+    'Epothilone B', 
+    'Harmine hydrochloride', 
+    'Scopine HCl', 
+    'Tetrahydropalmatine', 
+    'Tilmicosin'
+  ),
+  Category=c(
+    "opioid receptor antagonist", 
+    "methyltransferase stimulant, phosphodiesterase inhibitor", 
+    "Bcr-Abl kinase inhibitor", 
+    "TRPV antagonist", 
+    "serotonin receptor agonist", 
+    "microtubule inhibitor", 
+    "DYRK inhibitor", 
+    "adrenergic receptor antagonist",
+    "dopamine receptor antagonist",
+    "bacterial cell wall synthesis inhibitor"
+    )
+)
+
+id.match <- match(x$Compound_ID, xcat.clean$Compound_ID)
+x$Category[!is.na(id.match)] <- xcat.clean$Category[na.omit(id.match)]
+
+################################################################################
+# Merge replicates
+################################################################################
+xmeta <- dplyr::select(x, Cell_Line, Compound_ID, Category)
+x <- dplyr::select(x, matches('^nonborder'))
+x <- cbind(xmeta, x)
+
+# Initialize DMSO set
+id.dmso <- xmeta$Category == 'DMSO'
+xdmso <- x[id.dmso,]
+
+# Merge replicates in non-dmso set
+xtreat <- group_by(x[!id.dmso,], Cell_Line, Compound_ID, Category) %>%
+  summarize_if(is.numeric, median) %>%
+  ungroup()
+
+x <- rbind(xdmso, xtreat) %>%
+  mutate(Compound_Usage=ifelse(Compound_ID == 'DMSO', 'negative_ctrl_cpd', 'query_cpd')) %>%
+  mutate(Compound_Usage=ifelse(Compound_ID == 'Gemcitabine', 'positive_ctrl_cpd', Compound_Usage)) %>%
+  mutate(Compound_Usage=ifelse(Compound_ID == 'Bortezomib', 'positive_ctrl_cpd', Compound_Usage))
+  

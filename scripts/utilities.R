@@ -142,26 +142,16 @@ dmso_distance <- function(x, null_summary=max) {
   return(cbind(xdist, xmeta))
 }
 
-bioactive_difference <- function(x, cell.line, bootstrap=FALSE) {
+phenoactivity <- function(x, cell.line, categories, bootstrap=FALSE) {
   # Compute deviation between DMSO, compound ECDFs for select cell line(s)
   xcl <- filter(x, Cell_Line %in% cell.line)
   if (bootstrap) xcl <- bootstrap_table(xcl)
   
-  xdmso <- filter(xcl, Compound_ID == 'DMSO')
-  xcpd <- filter(xcl, Compound_ID != 'DMSO') %>%
-    group_by(Compound_ID) %>%
-    top_n(1, DistNorm)
-  
-  return(cvm_stat(xdmso$DistNorm, xcpd$DistNorm, power=1))
-}
-
-bioactive_difference_ctg <- function(x, cell.lines, categories, bootstrap=FALSE) {
-  # Compute deviation between DMSO, category ECDFs for select cell line(s)
-  out <- sapply(categories, function(ctg) {
-    sapply(cell.lines, function(cl) {
-      xctg <- filter(x, Category %in% c(ctg, 'DMSO'))
-      bioactive_difference(xctg, cl, bootstrap)
-    }) 
+  out <- sapply(unique(categories), function(ctg) {
+    xdmso <- filter(xcl, Category == 'DMSO')
+    xcpd <- filter(xcl, Category == ctg)
+      
+    return(cvm_stat(xdmso$DistNorm, xcpd$DistNorm, power=1))
   })
   
   return(out)
@@ -169,25 +159,18 @@ bioactive_difference_ctg <- function(x, cell.lines, categories, bootstrap=FALSE)
 
 score_bioactive <- function(x, weights) {
   # Evaluate weighted bioactivity score by cell line set
-  x <- x[,names(weights)]
-  stopifnot(ncol(x) == length(weights))
-  score <- colSums(t(x) * weights) / sum(weights)
-  return(return(score))
+  x <- x[names(weights)]
+  stopifnot(length(x) == length(weights))
+  score <- sum(x * weights) / sum(weights)
+  return(score)
 }
 
 bootstrap_table <- function(x) {
   # Bootstrap sample table maintaining DMSO/cpd balance
-  #xdmso <- filter(x, Compound_ID == 'DMSO')
-  #xdmso <- slice_sample(xdmso, n=nrow(xdmso), replace=TRUE)
-  #xcpd <- filter(x, Compound_ID != 'DMSO')
-  #xcpd <- slice_sample(xcpd, n=nrow(xcpd), replace=TRUE)
-  
+
   # Add epsilon noise to deal with duplicate samples
-  eps <- rnorm(nrow(x), sd=1e-10)
   id.bootstrap <- bootstrap_sample(x$Category)
-  out <- x[id.bootstrap,]# %>% mutate(DistNorm=DistNorm + eps)
-    #slice_sample(x, n=nrow(x), replace=TRUE) %>% 
-    #mutate(DistNorm=DistNorm + eps)
+  out <- x[id.bootstrap,]
   
   return(out)
 }
@@ -195,19 +178,13 @@ bootstrap_table <- function(x) {
 ################################################################################
 # Functions for evaluating compound similarity
 ################################################################################
-category_distance <- function(x, categories, summary_fun, dist.mat=NULL, bootstrap=FALSE) {
+phenosimilarity <- function(x, categories, summary_fun, dist.mat=NULL, bootstrap=FALSE) {
   
   # Compute pairwise distances
   if (is.null(dist.mat)) dist.mat <- dist(x) %>% as.matrix
   
   # Take bootstrap sample
   if (bootstrap) id.bootstrap <- bootstrap_sample(categories)
-  
-  # Initialize DMSO median distance
-  id.dmso <- which(categories == 'DMSO')
-  if (bootstrap) id.dmso <- id.bootstrap[id.bootstrap %in% id.dmso]
-  dmso.dist <- dist.mat[id.dmso, id.dmso]
-  dmso.dist <- dmso.dist[upper.tri(dmso.dist)]
   
   # Compute within category distances
   dist.summary <- sapply(unique(categories), function(ctg) {
@@ -222,19 +199,17 @@ category_distance <- function(x, categories, summary_fun, dist.mat=NULL, bootstr
     nbhd.dist <- apply(dist.mat[id.ctg, ], MAR=1, function(z) sort(z))
     nbhd.dist <- nbhd.dist[2:length(unique(id.ctg)),]
     
-    out.within <- summary_fun(ctg.dist, dmso.dist)
     out.between <- summary_fun(ctg.dist, nbhd.dist)
-    return(c(out.within, out.between))
+    return(out.between)
   })
   
-  out <- data.frame(t(dist.summary)) %>%
-    mutate(Category=colnames(dist.summary)) %>%
-    dplyr::rename(DistWithin=X1, DistBetween=X2)
-  
+  out <- data.frame(DistBetween=dist.summary) %>%
+    mutate(Category=colnames(dist.summary)) 
+    
   return(out)
 }
 
-category_distance_distn <- function(x, categories, dist.mat=NULL) {
+phenosimilarity_distn <- function(x, categories, dist.mat=NULL) {
   
   # Compute pairwise distances
   if (is.null(dist.mat)) dist.mat <- dist(x) %>% as.matrix
@@ -264,7 +239,7 @@ aggregate_similarity <- function(x, cell.lines) {
   # Aggregate as max similarity across cell lines
   out <- filter(x, Cell_Line %in% cell.lines) %>%
     group_by(Category) %>%
-    summarize(DistWithin=max(DistWithin), DistBetween=max(DistBetween)) %>%
+    summarize(Dist=max(Dist)) %>%
     mutate(Cell_Set=str_c(cell.lines, collapse=', '))
   
   return(out)
