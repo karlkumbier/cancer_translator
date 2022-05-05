@@ -179,6 +179,7 @@ xumap <- lapply(c('OVCAR4', 'HEPG2', 'A549'), function(cl) {
 
 # Initialize parameters for visualization
 cat.umap <- c('glucocorticoid receptor agonist', 'HDAC inhibitor')
+lines.umap <- c('OVCAR4', 'HEPG2')
 col.pal.umap <- pal_jama()(5)[c(1, 2, 4)]
 
 xplot <- rbindlist(xumap) %>%
@@ -207,35 +208,16 @@ if (save.fig) pdf(str_c(fig.dir, 'umap.pdf'), height=12, width=12)
 plot(p)  
 if(save.fig) dev.off()
 
+# Summary statistics for select MOAs
+xplot <- rbindlist(xdist) %>%
+  filter(Category %in% cat.umap, Cell_Line %in% lines.umap) %>%
+  group_by(Cell_Line, Category) %>%
+  summarize(PropActive=mean(DistNorm > 1), Count=sum(DistNorm > 1), N=n())
 
-# Initialize parameters for example visualization
-cat.umap <- c(
-  'HSP inhibitor', 
-  'MEK inhibitor',
-  'serotonin receptor agonist',
-  'DMSO'
-)
-
-col.pal.umap <- pal_jama()(7)
-
-xplot <- rbindlist(xumap) %>%
-  filter(Cell_Line %in% 'A549') %>%
-  filter(Category %in% cat.umap) %>%
-  mutate(Alpha=as.numeric(Category != 'DMSO')) %>%
-  filter(!is.na(Category))
-
-ggplot(xplot, aes(x=UMAP1, y=UMAP2, col=Category, alpha=Alpha, size=Alpha)) +
-  geom_jitter(height=0.05, width=0.05) +
-  facet_wrap(~Cell_Line, ncol=1) +
-  scale_color_manual(values=col.pal.umap) +
-  labs(col=NULL) +
-  scale_alpha(range=c(0.3, 1)) +
-  scale_size(range=c(2, 4)) +
-  guides(shape='none') +
-  guides(size='none') +
-  guides(alpha='none') +
-  theme(legend.position=c(0.15, 0.1))
-
+ggplot(xplot, aes(x=Cell_Line, y=PropActive, fill=Cell_Line)) +
+  facet_grid(. ~ Category) +
+  geom_bar(stat='identity') +
+  scale_fill_jama()
 
 #' # Pheno-activity comparisons
 #' ### Fig 1b. DMSO centroid distance distributions
@@ -286,7 +268,7 @@ xtext <- data.frame(Cell_Line=rep(lines.select, 2)) %>%
   mutate(Type=factor(Type, levels=cat.umap[2:1])) %>%
   mutate(Category=Type) %>%
   mutate(Score=c(xpa[lines.select, cat.umap[1]], xpa[lines.select, cat.umap[2]])) %>%
-  mutate(Score=str_c('Phenoactivity = ', round(Score, 3)))
+  mutate(Score=str_c('Pheno-activity = ', round(Score, 3)))
 
 p <- rbind(xplot1, xplot2) %>%
   mutate(Type=factor(Type, levels=cat.umap[2:1])) %>%
@@ -345,14 +327,15 @@ if(save.fig) dev.off()
 #' category are computed by comparing DMSO centroid distances between DMSO wells
 #' and wells with a select MOA.
 #+ bioactivity_category, fig.height=18, fig.width=24
+table(rownames(xpa)[apply(xpa, MAR=2, which.max)])
 
 # Initialize column ordering and bioactivity proportions
 bioactive.score <- rowMeans(xpa)
 bioactive.order <- order(bioactive.score, decreasing=TRUE)
 
 # Filter to compounds with high bioactivity in > 1 cell line
-id.keep <- colSums(xpa > quantile(xpa, 0.75)) > 0
-xpa <- xpa[,id.keep]
+#id.keep <- colSums(xpa > quantile(xpa, 0.75)) > 0
+#xpa <- xpa[,id.keep]
 xpa[xpa < 0] <- 0
 
 col.order <- order(
@@ -368,7 +351,7 @@ col.order <- order(
 colnames(xpa) <- str_remove_all(colnames(xpa), ',.*$')
 
 fout <- str_c(fig.dir, 'bioactive_ctg.png')
-if (save.fig) png(fout, height=16, width=20, units='in', res=300)
+if (save.fig) png(fout, height=20, width=20, units='in', res=300)
 xpa.plot <- xpa
 xpa.plot[xpa.plot < 0.25] <- 0.25
 
@@ -377,10 +360,10 @@ superheat(
   heat.pal=heat.pal,
   yt=bioactive.score[bioactive.order],
   yt.plot.type='bar',
-  yt.axis.name='Average pheno-activity score',
+  yt.axis.name='Mean pheno-activity score',
   yt.axis.name.size=14,
   heat.pal.values=seq(0, 1, by=0.1),
-  left.label.size=0.4,
+  left.label.size=0.3,
   left.label.text.size=5
 )
 
@@ -440,11 +423,16 @@ xopt.spec <- reshape2::melt(xopt.spec) %>%
   mutate(Type='Specialist')
 
 # Plot optimal bioactivity scores
+group_by(xopt.gen, CellSet) %>%
+  summarize(Score=mean(Score)) %>%
+  arrange(desc(Score)) %>%
+  as.data.frame
+
 p1 <- xopt.gen %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
   geom_boxplot(aes(alpha=Alpha), fill=col.pal[2], color=col.pal[2]) +
-  ylab('Bioactivity score') +
+  ylab('Pheno-activity score') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +
   scale_alpha(range=c(0.25, 0.75)) +
@@ -457,7 +445,7 @@ p2 <- xopt.spec %>%
   mutate(Alpha=as.numeric(KCells)) %>%
   ggplot(aes(x=reorder(CellSet, Score), y=Score)) +
   geom_boxplot(aes(alpha=Alpha), fill=col.pal[2], color=col.pal[2]) +
-  ylab('Bioactivity score') +
+  ylab('Pheno-activity score') +
   scale_color_nejm(drop=FALSE) +
   scale_fill_nejm(drop=FALSE) +
   scale_alpha(range=c(0.25, 0.75)) +
@@ -469,3 +457,5 @@ p2 <- xopt.spec %>%
 if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=12, width=12)
 gridExtra::grid.arrange(p1, p2, ncol=1)
 if(save.fig) dev.off()
+
+save.image(file='bioactivity.Rdata')

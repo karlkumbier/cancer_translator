@@ -30,9 +30,8 @@ n.core <- 16
 min.cat <- 5
 ncell.thresh <- 50
 n.bootstrap <- 50
-#umap.cells <- c('A549', '786-0')
 umap.cells <- c('A549', 'FB')
-save.fig <- FALSE
+save.fig <- TRUE
 
 # Visualization parameters
 heat.pal <- viridis::viridis(10)
@@ -104,15 +103,8 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID)
 
 #' ## Similarity by MOA
 #' To assess the similarity of compounds with the same MOA in phenotypic space, 
-#' we consider both within and between category similarity. Within category 
-#' similarity compares the distributions of: (i) pairwise distances between 
-#' samples with the same MOA and (ii) pairwise distances between DMSO samples. 
-#' Intuitively, this asks whether points with the same MOA are closer in 
-#' phenotypic space than DMSO controls. Between category similarity compares the 
-#' distributions of: (i) pairwise distances between samples with the same MOA
-#' (ii) pairwise distances between samples with the given MOA and their nearest 
-#' neighbors. Intuitively, this asks how close points with the same MOA are to
-#' one another relative to neighboring compounds.
+#' we consider the distance between samples with the same MOA relative to their 
+#' nearest neighbors.
 #' 
 #' We compare distributions using a signed CVM statistic. For within category
 #' similarity, values < 0 imply that the DMSO samples are closer than than 
@@ -126,13 +118,15 @@ x <- filter(x, Compound_ID %in% compound.table$Compound_ID)
 
 # Compute within/between MOA similarity for each cell line
 moa.dist <- lapply(unique(x$Cell_Line), function(cl) {
+  
   # Filter to select cell line
   xc <- filter(x, Cell_Line == cl)
   xc.feat <- select(xc, matches('^non'))
   
   # Compute within/between MOA distance
   xdist <- phenosimilarity(xc.feat, xc$Category, summary_fun)
-  out <- data.frame(Category=rownames(xdist), Dist=xdist$DistBetween) %>%
+  out <- data.frame(Category=xdist$Category, Dist=xdist$Dist) %>%
+    mutate(Prop=xdist$Prop) %>%
     mutate(Dist=Dist / 0.5) %>%
     mutate(Dist= 1 + Dist) %>%
     mutate(Count=table(xc$Category)[Category]) %>%
@@ -157,8 +151,10 @@ moa.dist.bs <- lapply(unique(x$Cell_Line), function(cl) {
     
     # Compute bootstrap within/between MOA distance
     xdist <- phenosimilarity(xc.feat, xc$Category, summary_fun, xc.dist, TRUE)
-    out <- data.frame(Category=rownames(xdist), Dist=xdist$DistBetween) %>%
-      mutate(Dist=1 + (Dist / 0.5)) %>%
+    out <- data.frame(Category=xdist$Category, Dist=xdist$Dist) %>%
+      mutate(Prop=xdist$Prop) %>%
+      mutate(Dist=Dist / 0.5) %>%
+      mutate(Dist= 1 + Dist) %>%
       mutate(Count=table(xc$Category)[Category]) %>%
       mutate(Cell_Line=cl) %>%
       mutate(Rep=i)
@@ -181,7 +177,7 @@ moa.dist.bs <- lapply(unique(x$Cell_Line), function(cl) {
 # UMAP visualization
 ################################################################################
 # Subset to selected cell line for UMAP visualization
-xplot <- lapply(umap.cells, function(cl) {
+xumap <- lapply(umap.cells, function(cl) {
  
   set.seed(47)
   
@@ -199,6 +195,7 @@ xplot <- lapply(umap.cells, function(cl) {
 
   # Initialize data for visualization
   out <- data.frame(Category=xc$Category) %>%
+    mutate(Compound_ID=xc$Compound_ID) %>%
     mutate(Cell_Line=cl) %>%
     mutate(X1=xumap$layout[,1]) %>%
     mutate(X2=xumap$layout[,2]) 
@@ -212,21 +209,23 @@ category.select <- c(
   'HSP inhibitor',
   'glycogen synthase kinase inhibitor',
   'SYK inhibitor',
+  'mTOR inhibitor',
   'DMSO'
 )
 
-xplot <- rbindlist(xplot)
+xplot <- rbindlist(xumap)
 xplot.select <- filter(xplot, Category %in% category.select)
-xplot.other <- filter(xplot, !Category %in% category.select) %>%
+xplot.other <- xplot %>%
+  filter(!Category %in% category.select) %>%
   mutate(Category='Other')
 
 # Plot select compound category in UMAP space, top neighborhood
 col.pal.umap <- pal_jama()(7)
-col.pal.umap[4:5] <- col.pal.umap[5:4]
 
 p <- rbind(xplot.select, xplot.other) %>%
   mutate(Size=(Category != 'Other') + 1) %>%
   mutate(Size=Size + (!Category %in% c('DMSO', 'Other'))) %>%
+  mutate(Category=str_replace_all(Category, 'glycogen synthase kinase', 'GSK')) %>%
   ggplot(aes(x=X1, y=X2, col=Category, size=Size, alpha=Size)) +
   geom_jitter(height=0.25, width=0.25) +
   xlab('UMAP1') +
@@ -236,11 +235,37 @@ p <- rbind(xplot.select, xplot.other) %>%
   scale_alpha(guide='none', range=c(0.25, 0.9)) +
   labs(col=NULL) +
   facet_wrap(~Cell_Line, ncol=1) +
-  theme(legend.position=c(0.15, 0.95))
+  theme(legend.position='none') #c(0.15, 0.925))
 
-if (save.fig) pdf(str_c(fig.dir, 'umap_', umap.cell, '.pdf'), height=12, width=12)
+umap.cell <- str_c(umap.cells, collapse='-')
+if (save.fig) pdf(str_c(fig.dir, 'umap_', umap.cell, '.pdf'), height=18, width=12)
 plot(p)
 if(save.fig) dev.off()
+
+################################################################################
+# mTOR comparison
+################################################################################
+xf <- filter(x, Category == 'mTOR inhibitor', Cell_Line == 'A549')
+xfeat <- dplyr::select(xf, matches('^nonborder')) 
+
+rownames(xfeat) <- xf$Compound_ID
+pal <- RColorBrewer::brewer.pal(8, 'RdBu')
+pal <- c(pal[1:4], '#FFFFFF', pal[5:8])
+
+fout <- str_c(fig.dir, 'mtor.png')
+if (save.fig) png(fout, height=20, width=10, units='in', res=300)
+superheat(
+  xfeat,
+  row.dendrogram=TRUE,
+  pretty.order.rows=TRUE,
+  pretty.order.cols=TRUE,
+  bottom.label='none',
+  left.label='variable',
+  left.label.size=1.25,
+  heat.pal=pal,
+  heat.lim=c(-1, 1)
+)
+if (save.fig) dev.off()
 
 #' ### Fig 2b. Query v reference densities
 #' Kernel densities of pairwise distances for query (color) and reference (grey)
@@ -260,29 +285,34 @@ moa.distn <- lapply(umap.cells, function(cl) {
 
 # Format data table for figure
 col.pal.umap <- pal_jama()(7)
-col.pal.umap <- c(col.pal.umap[c(2, 3, 4)], '#CCCCCC')
+col.pal.umap <- c(col.pal.umap[c(2, 3, 4, 6)], '#CCCCCC')
 
 # Initialize text for scores
 category.select <- setdiff(category.select, 'DMSO')
+
 xplot.text <- filter(moa.dist, Category %in% category.select) %>%
   filter(Cell_Line %in% umap.cells) %>%
-  rename(L2=Category) %>%
-  mutate(L3=L2) %>%
-  mutate(Dist=round(Dist, 3))
-
-p <- reshape2::melt(moa.distn) %>%
+  mutate(Dist=str_c('Pheno-similarity = ', round(Dist, 3))) %>%
+  mutate(Category=str_replace_all(Category, 'glycogen synthase kinase', 'GSK')) %>%
+  mutate(G=Category)
+  
+xplot <- reshape2::melt(moa.distn) %>%
   mutate(Cell_Line=umap.cells[L1]) %>%
-  mutate(L3=ifelse(L3 == 'Query', L2, 'ZZZ')) %>%
-  ggplot(aes(x=value, fill=L3, col=L3)) +
+  mutate(L2=str_replace_all(L2, 'glycogen synthase kinase', 'GSK')) %>%
+  mutate(L3=str_replace_all(L3, 'glycogen synthase kinase', 'GSK')) %>%
+  mutate(G=ifelse(L3 == 'Query', L2, 'ZZZ')) %>%
+  dplyr::rename(Category=L2)
+  
+p <- ggplot(xplot, aes(x=value, fill=G, col=G)) +
   geom_density(alpha=0.6) +
   geom_text(data=xplot.text, x=3, y=1.5, size=6, aes(label=Dist)) +
-  facet_grid(Cell_Line~L2) +
+  facet_grid(Cell_Line~Category) +
   scale_fill_manual(values=col.pal.umap) +
   scale_color_manual(values=col.pal.umap) +
   xlab('Pairwise distance') +
   theme(legend.position='none')
 
-if (save.fig) pdf(str_c(fig.dir, 'density_', umap.cell, '.pdf'), height=12, width=6)
+if (save.fig) pdf(str_c(fig.dir, 'density_', umap.cell, '.pdf'), height=14, width=24)
 plot(p)
 if(save.fig) dev.off()
 
@@ -304,13 +334,19 @@ xplot <- matrix(moa.dist$Dist, nrow=length(cell.lines))
 colnames(xplot) <- categories
 rownames(xplot) <- cell.lines
 
+rownames(xplot)
+tt <- table(apply(xplot, MAR=2, which.max))
+sum(tt) - max(tt)
+
+# Filter to top similarity compound categories
+quantile.threshold <- quantile(xplot, 0.75)
+xplot <- xplot[,colSums(xplot > quantile.threshold) > 1]
+
 # Rank compounds by average MOA similarity
 avg.sim <- rowMeans(xplot)
 row.order <- order(avg.sim, decreasing=TRUE)
 
 # Filter to compounds in top quartile
-thresh <- quantile(xplot, 0.75)
-xplot <- xplot[,colSums(xplot > thresh) > 1]
 xplot <- xplot[,colnames(xplot) != 'DMSO']
 xplot <- xplot[,colnames(xplot) != 'Others']
 categories.moa <- colnames(xplot)
@@ -328,11 +364,11 @@ col.order <- order(
 # Clean column names for figure
 colnames(xplot) <- str_remove_all(colnames(xplot), ',.*$')
 
-fout <- str_c(fig.dir, 'between_sim.png')
-if (save.fig) png(fout, height=12.5, width=26, units='in', res=300)
+fout <- str_c(fig.dir, 'similarity_heatmap.png')
+if (save.fig) png(fout, height=20, width=20, units='in', res=300)
 superheat(
   t(xplot[row.order, col.order]), 
-  left.label.size=0.5,
+  left.label.size=0.3,
   left.label.text.size=5,
   heat.pal=heat.pal,
   heat.lim=c(0, max(xplot))
@@ -399,6 +435,7 @@ if (save.fig) pdf(str_c(fig.dir, 'selection.pdf'), height=8, width=8)
 plot(p)
 if(save.fig) dev.off()
 
+
 #' ### Fig 2d.  Bioactivity v. cell similarity
 #' Joint distribution of bioactivity/MOA similarity scores
 #+ bioactive_similarity, fig.height=12, fig.width=12
@@ -424,3 +461,5 @@ p <- ggplot(xplot, aes(x=Bioactivity, y=DistBetween)) +
 if (save.fig) pdf(str_c(fig.dir, 'bioactive_v_moa.pdf'), height=12, width=12)
 plot(p)
 if(save.fig) dev.off()
+
+save.image(file='distance.Rdata')

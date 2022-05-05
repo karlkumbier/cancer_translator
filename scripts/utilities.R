@@ -199,11 +199,23 @@ phenosimilarity <- function(x, categories, summary_fun, dist.mat=NULL, bootstrap
     nbhd.dist <- apply(dist.mat[id.ctg, ], MAR=1, function(z) sort(z))
     nbhd.dist <- nbhd.dist[2:length(unique(id.ctg)),]
     
+    # Compute proportion of nearest neighbors in category
+    if (!bootstrap) {
+      nbhd.ovlp <- apply(dist.mat[id.ctg, ], MAR=1, function(z) order(z))
+      nbhd.ovlp <- nbhd.ovlp[2:length(unique(id.ctg)),]
+      nbhd.prop <- apply(nbhd.ovlp, MAR=2, function(z) length(intersect(z, id.ctg)))
+      nbhd.prop <- mean(nbhd.prop / (length(id.ctg) - 1))
+    } else {
+      nbhd.prop <- 0
+    }
+    
+    
     out.between <- summary_fun(ctg.dist, nbhd.dist)
-    return(out.between)
+    return(c(out.between, nbhd.prop))
   })
   
-  out <- data.frame(DistBetween=dist.summary) %>%
+  out <- data.frame(Dist=dist.summary[1,]) %>%
+    mutate(Prop=dist.summary[2,]) %>%
     mutate(Category=colnames(dist.summary)) 
     
   return(out)

@@ -114,7 +114,7 @@ filter(xcat.tab, Count > 1) %>%
   theme(text=element_text(size=24))
 
 # Summarize prevalent compound categories
-xcat.tab.top <- filter(xcat.tab, Count >= 10, Category != '')
+xcat.tab.top <- filter(xcat.tab, Count >= min.cat, Category != '')
 cat.keep <- xcat.tab.top$Category
 
 xcat.tab.top %>%
