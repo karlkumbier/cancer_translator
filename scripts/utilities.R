@@ -283,3 +283,32 @@ opt_similarity <- function(x, categories, weights, k=1) {
   opt <- similarity.score[which.max(similarity.score)]
   return(list(opt=opt, score=similarity.score))
 }
+
+phenosimilarity_cpd <- function(x, categories, compounds, dist.mat=NULL) {
+  
+  # Compute pairwise distances
+  if (is.null(dist.mat)) dist.mat <- dist(x) %>% as.matrix
+  
+  # Compute within category distances
+  dist.summary <- lapply(unique(categories), function(ctg) {
+    # Compute within category distance distribution
+    id.ctg <- which(categories == ctg)
+    cpd.ctg <- compounds[id.ctg]
+    
+    # Compute average distance between compounds within category
+    ctg.dist <- dist.mat[id.ctg, id.ctg]
+    diag(ctg.dist) <- NA
+    avg.dist <- rowMeans(ctg.dist, na.rm=TRUE)
+    
+    # Compute average distance to nearest neighborhood
+    nbhd.dist <- apply(dist.mat[id.ctg, ], MAR=1, function(z) sort(z))
+    nbhd.dist <- nbhd.dist[2:length(unique(id.ctg)),]
+    avg.nbhd.dist <- colMeans(nbhd.dist)
+    
+    out <- data.frame(Compound_ID=cpd.ctg, Category=ctg, Dist=avg.nbhd.dist/avg.dist)
+    return(out)
+  })
+  
+    
+  return(rbindlist(dist.summary))
+}

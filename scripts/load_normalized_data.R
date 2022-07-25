@@ -6,22 +6,10 @@ library(ggsci)
 library(readr)
 library(twosamples)
 
-
-theme_set(
-  theme_ipsum(
-    axis_title_size=18, 
-    strip_text_size=18, 
-    axis_text_size=14,
-    base_size=18, 
-    base_family='sans'
-  )
-)
-
 if (!exists('min.cat')) min.cat <- 5
 
 # Initialize color palettes
-heat.pal <- viridis::viridis(10)
-col.pal <- pal_nejm()(8)
+
 
 ################################################################################
 # Load dataset
@@ -75,9 +63,6 @@ x$Compound_ID[!is.na(id3)] <- xmoa$Compound_ID[na.omit(id3)]
 xmoa <- dplyr::select(xmoa, -Compound_ID_2, Compound_ID_3)
 
 # Merge data with MOA table
-#x <- left_join(x, xmoa, by='Compound_ID') %>%
-#  dplyr::select(-Compound_Category) %>%
-#  mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
 
 # Filter to compound/dose combinations evaluated in all cell lines
 x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
@@ -186,6 +171,16 @@ x$Category[!is.na(id.match)] <- xcat.clean$Category[na.omit(id.match)]
 ################################################################################
 # Merge replicates
 ################################################################################
+# Generate key for plate/well replicates by compound
+xkey <- filter(x, Compound_ID != 'DMSO') %>%
+  mutate(ID=str_c(PlateID, '_', WellID)) %>%
+  group_by(Cell_Line, Compound_ID) %>%
+  summarize(ID=list(ID)) %>%
+  mutate(ID=sapply(ID, function(z) str_c(z, collapse='; '))) %>%
+  mutate(Key=str_c(Cell_Line, Compound_ID)) %>%
+  ungroup() %>%
+  dplyr::select(-Cell_Line, -Compound_ID)
+
 xmeta <- dplyr::select(x, Cell_Line, Compound_ID, Category)
 x <- dplyr::select(x, matches('^nonborder'))
 x <- cbind(xmeta, x)
