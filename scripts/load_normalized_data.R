@@ -63,7 +63,6 @@ x$Compound_ID[!is.na(id3)] <- xmoa$Compound_ID[na.omit(id3)]
 xmoa <- dplyr::select(xmoa, -Compound_ID_2, Compound_ID_3)
 
 # Merge data with MOA table
-
 # Filter to compound/dose combinations evaluated in all cell lines
 x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
   distinct() %>%

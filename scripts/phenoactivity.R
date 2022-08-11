@@ -31,7 +31,7 @@ theme_set(
 n.core <- 16
 min.cat <- 5
 n.bootstrap <- 50
-save.fig <- TRUE
+save.fig <- FALSE
 
 # Function for normalizing distances within plate relative to DMSO
 null_summary <- function(x) {
@@ -121,7 +121,9 @@ xtable <- rbindlist(xdist) %>%
   dplyr::select(-Key) %>%
   dplyr::rename(Dist=DistNorm) %>%
   arrange(Cell_Line, Category, desc(Dist)) %>%
-  filter(Category != '')
+  filter(Category != '') %>%
+  mutate(Compound_ID=str_replace_all(Compound_ID, ',', ';')) %>%
+  mutate(Category=str_replace_all(Category, ',', ';'))
 
 fout <- str_c(output.dir, 'phenoactivity_table.csv')
 write.csv(file=fout, xtable, quote=FALSE, row.names=FALSE)

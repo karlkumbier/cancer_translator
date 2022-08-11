@@ -158,7 +158,10 @@ xtable <- rbindlist(cpd.dist) %>%
   mutate(Key=str_c(Cell_Line, Compound_ID)) %>%
   left_join(xkey, by='Key') %>%
   dplyr::select(-Key) %>%
-  arrange(Cell_Line, Category, desc(Dist))
+  arrange(Cell_Line, Category, desc(Dist)) %>%
+  mutate(Compound_ID=str_replace_all(Compound_ID, ',', ';')) %>%
+  mutate(Category=str_replace_all(Category, ',', ';'))
+
 
 fout <- str_c(output.dir, 'phenosimilarity_table.csv')
 write.csv(file=fout, xtable, quote=FALSE, row.names=FALSE)
