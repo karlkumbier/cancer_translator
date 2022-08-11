@@ -51,6 +51,9 @@ setwd('~/github/cancer_translator/')
 source('scripts/utilities.R')
 source('scripts/load_normalized_data.R')
 
+# Drop Hoechst cytoplasmic features
+# f.drop <- colnames(x) %>% str_subset('HOECHST') %>% str_subset('Cytoplasm')
+# x <- dplyr::select(x, -one_of(f.drop))
 
 # Initialize output directories
 output.dir <- '~/github/cancer_translator/results/cell_line/'

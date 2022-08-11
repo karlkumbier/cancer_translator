@@ -8,72 +8,53 @@ library(twosamples)
 
 if (!exists('min.cat')) min.cat <- 5
 
-# Initialize color palettes
-
-
 ################################################################################
 # Load dataset
 ################################################################################
 base.dir <- '~/github/cancer_translator/'
 source(str_c(base.dir, 'scripts/utilities.R'))
 
-# Load KS profile data, drop PCA features
+# Load KS profile data
 data.dir <- str_c(base.dir, 'data/screens/LH_CDC_1/')
 load(str_c(data.dir, 'profiles_normalized.Rdata'))
-x <- dplyr::select(x, -matches('^PC'))
 
-# Messy category table
-xx <- group_by(x, Compound_ID) %>% 
-  mutate(Category=Compound_Category) %>%
-  summarize(Category=list(na.omit(unique(Category)))) %>% 
-  mutate(NCat=sapply(Category, length)) %>%
-  arrange(desc(NCat)) %>%
-  mutate(Category=sapply(Category, str_c, collapse=', ')) %>%
-  select(-NCat)
+x <- dplyr::select(x, -matches('^PC')) %>%
+  mutate(Cell_Line=ifelse(Cell_Line == 'ALS-WT', 'FB', Cell_Line))
 
-# Initialize # of cell lines
 n.cell.line <- length(unique(x$Cell_Line))
 
-# Clean compound categories, taking maximum vote across replicates
-x <- group_by(x, Compound_ID) %>%
-  mutate(Dose=as.numeric(Dose)) %>%
-  mutate(Compound_Category=select_category(Compound_Category)) %>%
-  ungroup()
+# Load compound structure/ID table
+xcpd <- fread(str_c(base.dir, 'data/Unique_Screened_Compound_MOA.csv')) %>%
+  dplyr::rename(Compound_ID=Compound_ID_1)
 
-# Load cleaned MOA table
-xmoa <- fread(str_c(base.dir, 'data/Unique_Screened_Compound_MOA.csv')) %>%
-  dplyr::rename(Compound_ID=Compound_ID_1) %>%
-  dplyr::select(-InchIKeys_All) %>%
-  dplyr::rename(Category=MOA)
-
-xmoa.clean <- fread(str_c(base.dir, 'data/Screened_Compound_ID_MOA_added_20200420.csv')) %>%
+# Load compound moa table
+xmoa <- str_c(base.dir, 'data/Screened_Compound_ID_MOA_added_20200420.csv') %>%
+  fread() %>%
   dplyr::select(-InchIKeys_All) %>%
   dplyr::rename(Category=MOA) %>%
   dplyr::select(-Compound_Category, -Pathway, -Target)
 
-x <- left_join(x, xmoa.clean, by='Compound_ID') %>%
+# Merge MOA labels with phenotypic profiles
+x <- left_join(x, xmoa, by='Compound_ID') %>%
   mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category))
 
-# Clean compound ID names 
-id2 <- match(x$Compound_ID, xmoa$Compound_ID_2)
-x$Compound_ID[!is.na(id2)] <- xmoa$Compound_ID[na.omit(id2)]
+# Map compounds with identical structure to same ID
+id2 <- match(x$Compound_ID, xcpd$Compound_ID_2)
+x$Compound_ID[!is.na(id2)] <- xcpd$Compound_ID[na.omit(id2)]
 
-id3 <- match(x$Compound_ID, xmoa$Compound_ID_3)
-x$Compound_ID[!is.na(id3)] <- xmoa$Compound_ID[na.omit(id3)]
-xmoa <- dplyr::select(xmoa, -Compound_ID_2, Compound_ID_3)
+id3 <- match(x$Compound_ID, xcpd$Compound_ID_3)
+x$Compound_ID[!is.na(id3)] <- xcpd$Compound_ID[na.omit(id3)]
 
-# Merge data with MOA table
 # Filter to compound/dose combinations evaluated in all cell lines
-x.treat <- select(x, Cell_Line, Compound_ID, Dose_Category, Compound_Usage) %>%
+cpd.select <- select(x, Cell_Line, Compound_ID, Dose_Category) %>%
   distinct() %>%
-  group_by(Compound_ID, Dose_Category, Compound_Usage) %>% 
+  group_by(Compound_ID, Dose_Category) %>% 
   count() %>%
   filter(n == n.cell.line) %>%
-  mutate(ID=str_c(Compound_ID, Dose_Category, Compound_Usage))
+  mutate(ID=str_c(Compound_ID, Dose_Category))
 
-x <- mutate(x, ID=str_c(Compound_ID, Dose_Category, Compound_Usage)) %>%
-  filter(ID %in% x.treat$ID) %>%
-  filter(!is.na(Compound_Usage))
+x <- mutate(x, ID=str_c(Compound_ID, Dose_Category)) %>%
+  filter(ID %in% cpd.select$ID)
 
 # Initialize plate x cell line key
 plate.key <- dplyr::select(x, PlateID, Cell_Line) %>% distinct()
@@ -131,9 +112,6 @@ xtreat <- filter(x, !str_detect(Compound_Usage, 'ctrl')) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
   ungroup()
 
-x <- rbind(xctrl, xtreat) %>%
-  mutate(Cell_Line=ifelse(Cell_Line == 'ALS-WT', 'FB', Cell_Line))
-
 ################################################################################
 # Clean inconsistent categories
 ################################################################################
@@ -168,13 +146,13 @@ id.match <- match(x$Compound_ID, xcat.clean$Compound_ID)
 x$Category[!is.na(id.match)] <- xcat.clean$Category[na.omit(id.match)]
 
 ################################################################################
-# Merge replicates
+# Merge phenotypic profiles for replicate wells
 ################################################################################
 # Generate key for plate/well replicates by compound
 xkey <- filter(x, Compound_ID != 'DMSO') %>%
   mutate(ID=str_c(PlateID, '_', WellID)) %>%
   group_by(Cell_Line, Compound_ID) %>%
-  summarize(ID=list(ID)) %>%
+  summarize(ID=list(ID), .groups='drop') %>%
   mutate(ID=sapply(ID, function(z) str_c(z, collapse='; '))) %>%
   mutate(Key=str_c(Cell_Line, Compound_ID)) %>%
   ungroup() %>%
@@ -193,6 +171,7 @@ xtreat <- group_by(x[!id.dmso,], Cell_Line, Compound_ID, Category) %>%
   summarize_if(is.numeric, median) %>%
   ungroup()
 
+# Set positive/negative control labels
 x <- rbind(xdmso, xtreat) %>%
   mutate(Compound_Usage=ifelse(Compound_ID == 'DMSO', 'negative_ctrl_cpd', 'query_cpd')) %>%
   mutate(Compound_Usage=ifelse(Compound_ID == 'Gemcitabine', 'positive_ctrl_cpd', Compound_Usage)) %>%
