@@ -1,3 +1,10 @@
+#' This script runs bioactivity analyses described in figure 2. Compound/MOA 
+#' table and normalized KS profiles are loaded by a call to `load_ks_data.R`,
+#' which requires (i) that normalized KS profiles have been generated using 
+#' `make_ks_profiles.R` and `normalize_ks_profiles.R` and (ii) that a clean 
+#' compound/MOA table has been generated using `make_compound_table.R`.
+#' 
+#' Last updated 10/5/2022, Karl Kumbier
 #+ setup, echo=FALSE, warning=FALSE, message=FALSE
 library(data.table)
 library(tidyverse)
@@ -43,7 +50,7 @@ null_summary <- function(x) {
 
 # Initialize color palettes
 col.pal <- pal_jama()(7)
-heat.pal <- viridis::inferno(10)
+heat.pal <- viridis::viridis(10)
 
 ################################################################################
 # Load dataset
@@ -53,22 +60,20 @@ ccl.dir <- Sys.getenv('CCL_DIR')
 fig.dir <- str_c(ccl.dir, 'paper_figures/Figure2/fig2/')
 bioactivity.file <- str_c(fig.dir, 'bioactivity.Rdata') 
 cat.bioactivity.file <- str_c(fig.dir, 'category_bioactivity.Rdata') 
-cpd.file <- str_c(fig.dir, 'compound_table.csv')
-feature.file <- str_c(fig.dir, 'features.csv')
-phenoactivity.file <- str_c(fig.dir, 'phenoactivity_table.csv')
+feature.file <- str_c(ccl.dir, 'data/Table2_features.csv')
+phenoactivity.file <- str_c(ccl.dir, 'data/Table3_dist2dmso.csv')
 analysis.file <-  str_c(fig.dir, 'analysis.Rdata')
 dir.create(fig.dir, showWarnings=FALSE)
 
-source(str_c(ccl.dir, 'scripts/utilities.R'))
-source(str_c(ccl.dir, 'scripts/load_normalized_data.R'))
+source(str_c(ccl.dir, 'paper_figures/utilities.R'))
+source(str_c(ccl.dir, 'paper_figures/load_ks_data.R'))
 
-# Save table of compounds/MOAs
-xcpd <- dplyr::select(x, Compound_ID, Category) %>% 
-  dplyr::rename(MOA=Category) %>%
-  distinct() %>%
-  filter(MOA != '')
+# Initialize prevalent compound categories for figures
+cat.keep <- group_by(x, Category, Cell_Line) %>%
+  count() %>%
+  filter(n >= min.cat)
 
-write.csv(file=cpd.file, xcpd, row.names=FALSE)
+cat.keep <- unique(cat.keep$Category)
 
 # Save feature table
 features <- colnames(x) %>% 
@@ -94,10 +99,14 @@ write.csv(file=feature.file, features, row.names=FALSE)
 #' 
 #' 
 #' **Note:** Distances are computed within plate, normalized relative to the 
-#' DMSO null distribution, and aggregated by treatment (i.e. dose/compound pairs).
+#' DMSO null distribution.
 #' 
 #' **Note:** We assess bioactivity relative to the highest dose level of a given 
-#' compound.
+#' compound (processing performed in `load_ks_data.R`).
+#' 
+#' To account for redundancy among features, each feature is re-weighted 
+#' relative to it's correlationwith other features in the data set. As a 
+#' result, features that are highly correlated with others are down-weighted
 #+ bioactivity, fig.height=8, fig.width=14, echo=FALSE
 
 # Mean-center and correlation weight features by cell line
@@ -122,7 +131,11 @@ xtable <- rbindlist(xdist) %>%
   dplyr::select(-Key) %>%
   dplyr::rename(Dist=DistNorm) %>%
   arrange(Cell_Line, Category, desc(Dist)) %>%
-  filter(Category != '')
+  dplyr::rename(Distance2DMSO=Dist) %>%
+  dplyr::rename(ExperimentalID=ID) %>%
+  group_by(Cell_Line) %>%
+  arrange(desc(Distance2DMSO)) %>%
+  ungroup()
 
 write.csv(file=phenoactivity.file, xtable, row.names=FALSE)
 
@@ -155,7 +168,7 @@ plot(p)
 if(save.fig) dev.off()
 
 
-#' ### Fig 1a UMAP projection by cell line
+#' ### Fig 2a UMAP projection by cell line
 #' UMAP projections of phenotypic profiles by cell line. Points colored dark 
 #' blue represent DMSO-treated wells. Points colored orange and light blue 
 #' represent bioactive and inactive calls respectively.
@@ -198,14 +211,10 @@ p <- ggplot(xplot, aes(x=UMAP1, y=UMAP2, col=Color, alpha=Alpha)) +
   geom_jitter(height=0.05, width=0.05) +
   facet_wrap(~Cell_Line, ncol=1) +
   scale_color_manual(values=col.pal.umap) +
-  labs(col=NULL) +
   scale_alpha(range=c(0.3, 1)) +
-  guides(shape='none') +
-  guides(size='none') +
-  guides(alpha='none') +
   theme(legend.position='none')
 
-if (save.fig) pdf(str_c(fig.dir, 'fig1a.pdf'), height=12, width=12)
+if (save.fig) pdf(str_c(fig.dir, 'fig2a.pdf'), height=12, width=12)
 plot(p)  
 if(save.fig) dev.off()
 
@@ -227,12 +236,12 @@ plot(p)
 if(save.fig) dev.off()
 
 #' # Pheno-activity comparisons
-#' ### Fig 1b. DMSO centroid distance distributions
+#' ### Fig 2b. DMSO centroid distance distributions
 #' Density and ECDFs of distance to DMSO centroid by cell line, DMSO/compound. 
 #' Larger distances correspond to compounds that induce phenotypes that are
 #' more dissimilar to DMSO, representing stronger bioactivity. Deviations 
 #' between the DMSO/compound distributions represent cell line sensitivity.
-#+ bioactivity__distn, fig.height=8, fig.width=12
+#+ bioactivity_distn, fig.height=8, fig.width=12
 # Compute pheno-activity scores
 xmerge <- rbindlist(xdist) %>% arrange(Compound_ID, Cell_Line)
 
@@ -275,11 +284,11 @@ p <- rbind(xplot1, xplot2) %>%
   facet_grid(Cell_Line~Type) +
   theme(legend.position='none')
 
-if (save.fig) pdf(str_c(fig.dir, 'fig1b.pdf'), height=15, width=15)
+if (save.fig) pdf(str_c(fig.dir, 'fig2b.pdf'), height=15, width=15)
 plot(p)  
 if(save.fig) dev.off()
 
-#' ### Fig 1c. Bioactivity by cell line, compound category 
+#' ### Fig 2c. Bioactivity by cell line, compound category 
 #' 
 #' Bioactivity scores by cell line compound category. Scores for a given MOA
 #' category are computed by comparing DMSO centroid distances between DMSO wells
@@ -295,8 +304,8 @@ bioactive.score <- rowMeans(xpa)
 bioactive.order <- order(bioactive.score, decreasing=TRUE)
 
 # Filter to compounds with high bioactivity in > 1 cell line
-id.keep <- colSums(xpa > quantile(xpa, 0.75)) > 1
-xpa.plot <- xpa[,]#id.keep]
+#id.keep <- colSums(xpa > quantile(xpa, 0.75)) > 1
+xpa.plot <- xpa#[,]#id.keep]
 xpa.plot[xpa.plot < 0] <- 0
 
 col.order <- order(
@@ -311,7 +320,7 @@ col.order <- order(
 # Plot bioactivity by treatment, cell line
 colnames(xpa) <- str_remove_all(colnames(xpa), ',.*$')
 
-fout <- str_c(fig.dir, 'fig1c.png')
+fout <- str_c(fig.dir, 'fig2c.png')
 if (save.fig) png(fout, height=20, width=8, units='in', res=300)
 
 xpa.plot[xpa.plot < 0.25] <- 0.25
@@ -405,7 +414,7 @@ p <- xopt.gen %>%
   xlab(NULL)
 
 
-if (save.fig) pdf(str_c(fig.dir, 'fig1d.pdf'), height=12, width=12)
+if (save.fig) pdf(str_c(fig.dir, 'fig2d.pdf'), height=12, width=12)
 plot(p)
 if(save.fig) dev.off()
 

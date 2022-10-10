@@ -41,13 +41,8 @@ xmoa.unique <- dplyr::select(xmoa, Unique_Compound_ID, Category) %>%
   group_by(Unique_Compound_ID) %>%
   summarize(Category=list(unique(Category))) %>%
   mutate(Category=lapply(Category, function(z) setdiff(z, ''))) %>%
-  mutate(NCat=sapply(Category, length))
-
-#########################**************************#############################
-######################### TEMPORARY TAKE FIRST MOA #############################
-xmoa.unique <- mutate(xmoa.unique, Category=sapply(Category, function(z) z[1]))
-################################################################################
-#########################*************************##############################
+  mutate(NCat=sapply(Category, length)) %>%
+  mutate(Category=sapply(Category, '[', 1))
 
 xmoa <- dplyr::rename(xmoa, CategoryOrig=Category) %>%
   left_join(xmoa.unique, by='Unique_Compound_ID') %>%

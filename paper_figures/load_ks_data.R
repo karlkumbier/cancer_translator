@@ -34,19 +34,34 @@ x <- left_join(x, xmoa, by='Compound_ID') %>%
   mutate(Category=ifelse(Compound_ID == 'DMSO', 'DMSO', Category)) %>%
   mutate(Compound_ID=Unique_Compound_ID)
 
-# Filter KS profiles from unannotated compounds
+# Filter out KS profiles from unannotated compounds
 x <- filter(x, !is.na(Category))
+
 
 # Filter to highest dose
 x <- group_by(x, Compound_ID) %>%
   filter(Dose == max(as.numeric(Dose))) %>%
   ungroup()
 
+
+################################################################################
+# Generate key for plate/well replicates by compound
+################################################################################
+xkey <- filter(x, Compound_ID != 'DMSO') %>%
+  mutate(ID=str_c(PlateID, '_', WellID)) %>%
+  group_by(Cell_Line, Compound_ID) %>%
+  summarize(ID=list(ID), .groups='drop') %>%
+  mutate(ID=sapply(ID, function(z) str_c(z, collapse='; '))) %>%
+  mutate(Key=str_c(Cell_Line, Compound_ID)) %>%
+  ungroup() %>%
+  dplyr::select(-Cell_Line, -Compound_ID)
+
+
 ################################################################################
 # Merge phenotypic profiles for replicates - average over wells
 ################################################################################
 xmeta <- dplyr::select(x, Cell_Line, Compound_ID, Category, Dose)
-x <- dplyr::select(x, matches('^nonborder'))
+x <- dplyr::select(x, matches('(^nonborder|NCells)'))
 x <- cbind(xmeta, x)
 
 # Initialize DMSO set
@@ -63,6 +78,7 @@ x <- rbind(xdmso, xtreat) %>%
   mutate(Usage=ifelse(Compound_ID == 'DMSO', 'negative_ctrl_cpd', 'query_cpd')) %>%
   mutate(Usage=ifelse(Compound_ID == 'Gemcitabine', 'positive_ctrl_cpd', Usage)) %>%
   mutate(Usage=ifelse(Compound_ID == 'Bortezomib', 'positive_ctrl_cpd', Usage))
+
 
 ################################################################################
 # Tests for final output dataset
@@ -87,6 +103,3 @@ test_that("Single dose per compound", {
     mutate(NDose=sapply(Dose, length))
   expect_true(all(xdose.tab$NDose == 1))
 })
-
-
-
